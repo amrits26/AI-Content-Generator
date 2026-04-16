@@ -1,0 +1,50 @@
+{
+  "Billy Bunny": {
+    "name": "Billy Bunny",
+    "animal_type": "bunny",
+    "color": "soft blue",
+    "accessory": "red bowtie",
+    "description": "fluffy blue bunny with big round eyes and a red bowtie, Pixar style",
+    "traits": [
+      "friendly",
+      "curious",
+      "kind"
+    ],
+    "reference_image": null,
+    "lora_path": null,
+    "lora_trigger_word": "",
+    "lora_strength": 0.8
+  },
+  "Baby & Pup": {
+    "name": "Baby & Pup",
+    "animal_type": "puppy",
+    "color": "golden",
+    "accessory": "star necklace",
+    "description": "chubby baby in a diaper with a fluffy golden retriever puppy, soft nursery lighting",
+    "traits": [
+      "playful",
+      "giggly",
+      "cuddly"
+    ],
+    "reference_image": null,
+    "lora_path": null,
+    "lora_trigger_word": "",
+    "lora_strength": 0.8
+  },
+  "kids_style": {
+    "name": "kids_style",
+    "animal_type": "bunny",
+    "color": "pastel",
+    "accessory": "storybook sparkle",
+    "description": "cute kids and animal cartoon style, pastel colors, warm soft lighting",
+    "traits": [
+      "cute",
+      "playful",
+      "storybook"
+    ],
+    "reference_image": null,
+    "lora_path": "C:\\Users\\amrit\\OneDrive\\Documents\\AI Content Generator\\animate-studio\\loras\\kids_style\\pytorch_lora_weights.safetensors",
+    "lora_trigger_word": "kids_style",
+    "lora_strength": 0.7
+  }
+}

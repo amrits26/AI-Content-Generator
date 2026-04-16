@@ -1,0 +1,212 @@
+# -----------------------------------------------------------
+# AniMate Studio -- Configuration
+# -----------------------------------------------------------
+
+app:
+  name: "AniMate Studio"
+  version: "1.0.0"
+  output_dir: "./output"
+  assets_dir: "./assets"
+  loras_dir: "./loras"
+  log_file: "./animate_studio.log"
+  safety_audit_log: "./safety_audit.log"
+
+lora:
+  enabled: true
+  character_name: "storybook"
+  # SD1.5-compatible Storybook LoRA (768-dim cross-attn, works with AnimateDiff)
+  hf_repo: "artificialguybr/storybookredmond-1-5-version-storybook-kids-lora-style-for-sd-1-5"
+  path: ""                         # auto-downloaded from hf_repo
+  scale: 0.65
+  trigger_token: "KidsRedmAF"      # prepend to prompts when LoRA is active
+
+# -- AnimateDiff Motion Configuration --
+motion:
+  use_animatediff: true
+  # ToonYou Beta 6 — cartoon-optimized SD1.5 finetune, battle-tested with AnimateDiff
+  base_model_id: "frankjoshua/toonyou_beta6"
+  motion_module_path: "./models/motion_module/mm_sd_v15_v3.ckpt"
+  motion_adapter_repo: "guoyww/animatediff-motion-adapter-v1-5-3"
+  num_frames: 16                   # frames per clip (2s at 8fps)
+  fps: 8                           # native generation fps
+  steps: 25                        # inference steps per clip
+  guidance_scale: 7.5
+  height: 512                      # AnimateDiff native resolution
+  width: 512
+  lora_scale: 0.65
+  final_duration_s: 60.0           # target final video duration
+
+# -- Model Configuration --
+models:
+  video:
+    name: "damo-vilab/text-to-video-ms-1.7b"
+    dtype: "float16"
+    device: "cuda"
+    enable_cpu_offload: false
+    enable_vae_tiling: true
+    enable_vae_slicing: true
+    enable_attention_slicing: true
+    height: 256                    # native model resolution (upscaled to 1080p in export)
+    width: 256
+    num_inference_steps: 14        # quality-oriented production run
+    guidance_scale: 9.0            # stronger prompt adherence for sharper output
+    frames_per_scene: 24           # smoother motion per scene
+    fps: 12                        # smooth playback
+    fast_mode: true                # skip safety on 2/3 of frames in batch runs
+    vram_safety_margin_gb: 1.0     # pause if free VRAM < this
+
+  # -- Style / animation mode --
+  style: "pixar_cute"              # "pixar_cute" | "hyper_realistic"
+  camera_motion: "auto"            # "auto" | "static" | "slow_zoom_in" | "gentle_pan_right" | "dolly_out"
+
+  safety:
+    clip_model: "openai/clip-vit-large-patch14"
+    nsfk_model: "yasserrmd/nsfk-detection"
+    blocked_concepts:
+      - "gore"
+      - "horror"
+      - "scary"
+      - "weapon"
+      - "nudity"
+      - "blood"
+      - "violence"
+      - "death"
+      - "drugs"
+      - "alcohol"
+    safety_threshold: 0.25
+    max_regeneration_attempts: 3
+
+  story:
+    # Use local LLM or OpenAI-compatible API
+    provider: "local"           # "local" | "openai" | "ollama"
+    model_name: "llama3.2"      # Model name for ollama
+    openai_base_url: "http://localhost:11434/v1"
+    openai_api_key: ""          # Prefer env var OPENAI_API_KEY; or set here
+    temperature: 0.8
+    max_tokens: 2048
+
+# -- Audio Configuration --
+audio:
+  tts:
+    provider: "elevenlabs"      # "elevenlabs" | "edge_tts"
+    elevenlabs_api_key: ""      # Prefer env var ELEVENLABS_API_KEY; or set here
+    voices:
+      - id: "EXAVITQu4vr4xnSDxMaL"
+        name: "Rachel (Warm)"
+      - id: "pNInz6obpgDQGcFmaJgB"
+        name: "Adam (Friendly)"
+      - id: "21m00Tcm4TlvDq8ikWAM"
+        name: "Antoni (Cheerful)"
+      - id: "ErXwobaYiN019PkySvjV"
+        name: "Bella (Soft)"
+      - id: "MF3mGyEYCl7XYWbV9V6O"
+        name: "Emily (Playful)"
+    default_voice_id: "EXAVITQu4vr4xnSDxMaL"
+    stability: 0.75
+    similarity_boost: 0.80
+  bgm:
+    default_volume: 0.15        # BGM volume relative to narration
+    duck_volume: 0.06           # Volume during narration
+    fade_duration_ms: 500
+
+# -- Export Presets --
+export:
+  # -- AI upscaling & color grading --
+  upscale: true
+  upscale_factor: 2                  # 1024×576 → 2048×1152 (then encode to 1080p)
+  upscaler_model: "realesrgan-x4plus-anime"  # optimized for animation
+
+  color_grading:
+    youtube:
+      filter: "unsharp=5:5:1.5:5:5:1.5,eq=saturation=1.2:contrast=1.1"
+    facebook_reels:
+      filter: "unsharp=5:5:1.0:5:5:1.0,eq=saturation=1.15:contrast=1.05:brightness=0.03"
+    tiktok:
+      filter: "unsharp=5:5:1.0:5:5:1.0,eq=saturation=1.15:contrast=1.05:brightness=0.03"
+
+  burn_captions: false               # burn subtitles into video (great for TikTok)
+
+  youtube:
+    width: 1920
+    height: 1080
+    aspect: "16:9"
+    min_duration_s: 60
+    max_duration_s: 90
+    video_codec: "libx264"
+    video_bitrate: "8M"
+    audio_codec: "aac"
+    audio_bitrate: "192k"
+    crf: 18
+    preset: "slow"
+    pixel_format: "yuv420p"
+
+  facebook_reels:
+    width: 1080
+    height: 1920
+    aspect: "9:16"
+    min_duration_s: 15
+    max_duration_s: 60
+    video_codec: "libx264"
+    video_bitrate: "6M"
+    audio_codec: "aac"
+    audio_bitrate: "192k"
+    crf: 20
+    preset: "medium"
+    pixel_format: "yuv420p"
+
+  tiktok:
+    width: 1080
+    height: 1920
+    aspect: "9:16"
+    min_duration_s: 15
+    max_duration_s: 60
+    video_codec: "libx264"
+    video_bitrate: "6M"
+    audio_codec: "aac"
+    audio_bitrate: "192k"
+    crf: 20
+    preset: "medium"
+    pixel_format: "yuv420p"
+
+# -- Performance (HP Omen optimization) --
+performance:
+  gpu_temp_limit_c: 82
+  cooldown_seconds: 60
+  enable_scene_caching: true
+  cache_dir: "./output/.cache"
+  max_concurrent_scenes: 1
+  vram_pause_threshold: 0.90         # pause generation if VRAM > 90%
+  torch_empty_cache_between_scenes: true
+
+# -- Quality Presets (selectable in UI) --
+# Generation → then upscaled to 1080p in export pipeline
+quality_presets:
+  draft:
+    num_inference_steps: 20
+    height: 256
+    width: 256
+    fps: 8
+    upscale: false
+    guidance_scale: 7.0
+  standard:
+    num_inference_steps: 25
+    height: 256
+    width: 256
+    fps: 12
+    upscale: true
+    guidance_scale: 7.0
+  premium:
+    num_inference_steps: 40
+    height: 320
+    width: 320
+    fps: 12
+    upscale: true
+    guidance_scale: 7.5
+
+# -- Monetization Compliance --
+compliance:
+  require_safety_pass: true
+  require_human_input_log: true
+  require_ai_disclosure: true
+  require_royalty_free_audio: true
+  ai_disclosure_text: "This video was created with AI assistance using AniMate Studio. Story and creative direction by human creator."

@@ -1,0 +1,34 @@
+{
+  "Billy Bunny": {
+    "name": "Billy Bunny",
+    "animal_type": "bunny",
+    "color": "soft blue",
+    "accessory": "red bowtie",
+    "description": "fluffy blue bunny with big round eyes and a red bowtie, Pixar style",
+    "traits": [
+      "friendly",
+      "curious",
+      "kind"
+    ],
+    "reference_image": null,
+    "lora_path": null,
+    "lora_trigger_word": "",
+    "lora_strength": 0.8
+  },
+  "Baby & Pup": {
+    "name": "Baby & Pup",
+    "animal_type": "puppy",
+    "color": "golden",
+    "accessory": "star necklace",
+    "description": "chubby baby in a diaper with a fluffy golden retriever puppy, soft nursery lighting",
+    "traits": [
+      "playful",
+      "giggly",
+      "cuddly"
+    ],
+    "reference_image": null,
+    "lora_path": null,
+    "lora_trigger_word": "",
+    "lora_strength": 0.8
+  }
+}
