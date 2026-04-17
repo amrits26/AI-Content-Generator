@@ -24,8 +24,9 @@ from typing import Optional
 
 import numpy as np
 import torch
-import yaml
 from PIL import Image
+
+from engine.config import load_config
 
 # ── Logging setup ────────────────────────────────────────
 logger = logging.getLogger("animate_studio.safety")
@@ -54,9 +55,8 @@ class SafetyFilter:
     Text scan: NSFK transformer classifier flags unsafe story/narration text.
     """
 
-    def __init__(self, config_path: str = "config.yaml"):
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = yaml.safe_load(f)
+    def __init__(self, config_path: str = "config.yaml", config: Optional[dict] = None):
+        self.config = load_config(config_path=config_path, config=config)
 
         safety_cfg = self.config["models"]["safety"]
         self.clip_model_name = safety_cfg["clip_model"]

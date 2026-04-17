@@ -2,10 +2,11 @@
 ═══════════════════════════════════════════════════════════════
 AniMate Studio — Main Application (Gradio UI)
 ═══════════════════════════════════════════════════════════════
-Pastel-themed Gradio interface with 3 tabs:
+Pastel-themed Gradio interface with 4 tabs:
   Tab 1: Quick Story (TikTok/Reels Hook)
   Tab 2: Full Episode (YouTube Kids)
   Tab 3: Character Lab
+  Tab 4: Usage & Costs
 
 Launch: python main.py
 ═══════════════════════════════════════════════════════════════
@@ -21,7 +22,6 @@ from pathlib import Path
 
 import gradio as gr
 import pandas as pd
-import yaml
 
 try:
     import psutil
@@ -42,8 +42,10 @@ logger = logging.getLogger("animate_studio")
 
 # ── Load config ──────────────────────────────────────────
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-    CONFIG = yaml.safe_load(f)
+
+from engine.config import ConfigError, load_config
+
+CONFIG = load_config(CONFIG_PATH)
 
 # ── Ollama model check ───────────────────────────────────
 def _check_ollama_model():
@@ -105,7 +107,7 @@ def _check_tokenizer():
 _check_tokenizer()
 
 # ── Import engine modules ────────────────────────────────
-from engine.story_engine import StoryEngine, Storyboard
+from engine.story_engine import StoryEngine, StoryParseError, Storyboard
 from engine.character_manager import CharacterManager, CharacterProfile
 from engine.animator import Animator
 from engine.audio_engine import AudioEngine
@@ -134,13 +136,28 @@ try:
 except Exception as _e:
     logger.warning("CUDA check failed: %s", _e)
 
-# ── Initialize engines (lazy — heavy models load on first use) ─
-story_engine = StoryEngine(CONFIG_PATH)
-character_manager = CharacterManager(CONFIG_PATH)
-animator = Animator(CONFIG_PATH)
-audio_engine = AudioEngine(CONFIG_PATH)
-safety_filter = SafetyFilter(CONFIG_PATH)
-exporter = Exporter(CONFIG_PATH)
+# ── Shared character library + request-scoped engine factories ─
+character_manager = CharacterManager(CONFIG_PATH, config=CONFIG)
+
+
+def create_story_engine() -> StoryEngine:
+    return StoryEngine(CONFIG_PATH, config=CONFIG)
+
+
+def create_animator() -> Animator:
+    return Animator(CONFIG_PATH, config=CONFIG)
+
+
+def create_audio_engine() -> AudioEngine:
+    return AudioEngine(CONFIG_PATH, config=CONFIG)
+
+
+def create_safety_filter() -> SafetyFilter:
+    return SafetyFilter(CONFIG_PATH, config=CONFIG)
+
+
+def create_exporter() -> Exporter:
+    return Exporter(CONFIG_PATH, config=CONFIG)
 
 # ── Human input tracking for monetization compliance ─────
 _human_inputs_log = []
@@ -155,12 +172,43 @@ def log_human_input(action: str):
     logger.info("Human input logged: %s", action)
 
 
+# ── Input sanitization ───────────────────────────────────
+def sanitize_and_check_prompt(text: str, safety_filter: SafetyFilter, max_length: int = 2000) -> str:
+    """Strip, truncate, and safety-check a user-supplied prompt.
+
+    Raises ValueError if the prompt is empty or flagged as unsafe.
+    """
+    if not text or not text.strip():
+        raise ValueError("Prompt cannot be empty.")
+    text = text.strip()[:max_length]
+    result = safety_filter.scan_text(text)
+    if not result.passed:
+        raise ValueError(
+            f"Prompt flagged as inappropriate: {', '.join(result.flagged_concepts) if result.flagged_concepts else result.details}"
+        )
+    return text
+
+
 # ═════════════════════════════════════════════════════════
 # TAB 1: QUICK STORY (TikTok / Reels Hook)
 # ═════════════════════════════════════════════════════════
 
 def quick_generate(theme, duration, character_choice, style_choice, quality_preset, progress=gr.Progress()):
     """Generate a quick 15-60s hook for TikTok/Reels."""
+    # Disable button immediately
+    yield None, "⏳ Generating...", "", gr.update(interactive=False)
+
+    story_engine = create_story_engine()
+    animator = create_animator()
+    audio_engine = create_audio_engine()
+
+    # Input sanitization
+    try:
+        theme = sanitize_and_check_prompt(theme, create_safety_filter(), max_length=500)
+    except ValueError as e:
+        yield None, f"**Input rejected:** {e}", "", gr.update(interactive=True)
+        return
+
     log_human_input(f"Quick story theme: {theme}")
     log_human_input(f"Duration choice: {duration}s")
     log_human_input(f"Character: {character_choice}")
@@ -192,8 +240,15 @@ def quick_generate(theme, duration, character_choice, style_choice, quality_pres
             num_scenes=num_scenes,
             scene_duration=scene_duration,
         )
+    except StoryParseError as e:
+        yield None, f"Story generation failed: {e}", "", gr.update(interactive=True)
+        return
+    except ConfigError as e:
+        yield None, f"Configuration error: {e}", "", gr.update(interactive=True)
+        return
     except Exception as e:
-        return None, f"Story generation failed: {e}", ""
+        yield None, f"Story generation failed: {e}", "", gr.update(interactive=True)
+        return
 
     progress(0.15, desc="Generating animation...")
 
@@ -224,11 +279,18 @@ def quick_generate(theme, duration, character_choice, style_choice, quality_pres
             progress_callback=anim_progress,
             **gen_kwargs,
         )
+    except ConfigError as e:
+        yield None, f"Configuration error: {e}", "", gr.update(interactive=True)
+        return
     except Exception as e:
-        return None, f"Animation failed: {e}", ""
+        yield None, f"Animation failed: {e}", "", gr.update(interactive=True)
+        return
+    finally:
+        animator.cleanup_request_state()
 
     if not episode.get("video_path"):
-        return None, "No video generated — all scenes failed safety.", ""
+        yield None, "No video generated — all scenes failed safety.", "", gr.update(interactive=True)
+        return
 
     progress(0.8, desc="Adding narration...")
 
@@ -242,6 +304,10 @@ def quick_generate(theme, duration, character_choice, style_choice, quality_pres
             video_path=episode["video_path"],
             narration_path=narration["full_narration_path"],
         )
+    except ConfigError as e:
+        logger.warning("Audio configuration failed, returning video without narration: %s", e)
+        final_video = episode["video_path"]
+        audio_warning = f"\n\n⚠️ **Audio configuration failed:** {e}. Video exported without narration.\n"
     except Exception as e:
         logger.warning("Audio failed, returning video without narration: %s", e)
         final_video = episode["video_path"]
@@ -257,13 +323,16 @@ def quick_generate(theme, duration, character_choice, style_choice, quality_pres
     if audio_warning:
         story_info += audio_warning
 
-    return final_video, story_info, json.dumps(story_engine.storyboard_to_dict(storyboard), indent=2)
+    yield final_video, story_info, json.dumps(story_engine.storyboard_to_dict(storyboard), indent=2), gr.update(interactive=True)
 
 
 def export_for_reels(video_path, story_json):
     """Quick export optimized for Facebook Reels."""
     if not video_path:
         return "No video to export."
+
+    safety_filter = create_safety_filter()
+    exporter = create_exporter()
 
     story_data = json.loads(story_json) if story_json else {}
     narration_texts = [s["narration"] for s in story_data.get("scenes", [])]
@@ -295,6 +364,20 @@ def generate_storyboard_preview(
     story_concept, num_scenes, character_choice, progress=gr.Progress()
 ):
     """Step 1: Generate storyboard and return an editable Dataframe + JSON state."""
+    empty_df = pd.DataFrame(columns=["Scene", "Narration", "Visual Description", "Emotion", "Setting"])
+
+    # Disable button immediately
+    yield empty_df, "{}", "⏳ Generating storyboard...", gr.update(interactive=False)
+
+    story_engine = create_story_engine()
+
+    # Input sanitization
+    try:
+        story_concept = sanitize_and_check_prompt(story_concept, create_safety_filter(), max_length=2000)
+    except ValueError as e:
+        yield empty_df, "{}", f"**Input rejected:** {e}", gr.update(interactive=True)
+        return
+
     log_human_input(f"Storyboard concept: {story_concept}")
     progress(0.1, desc="Crafting storyboard...")
 
@@ -312,9 +395,15 @@ def generate_storyboard_preview(
             num_scenes=int(num_scenes),
             scene_duration=scene_duration,
         )
+    except StoryParseError as e:
+        yield empty_df, "{}", f"**Story generation failed:** {e}", gr.update(interactive=True)
+        return
+    except ConfigError as e:
+        yield empty_df, "{}", f"**Configuration error:** {e}", gr.update(interactive=True)
+        return
     except Exception as e:
-        empty_df = pd.DataFrame(columns=["Scene", "Narration", "Visual Description", "Emotion", "Setting"])
-        return empty_df, "{}", f"**Story generation failed:** {e}"
+        yield empty_df, "{}", f"**Story generation failed:** {e}", gr.update(interactive=True)
+        return
 
     progress(1.0, desc="Storyboard ready!")
 
@@ -337,7 +426,7 @@ def generate_storyboard_preview(
     info = f"# {storyboard.title}\n**Moral:** {storyboard.moral}\n\n"
     info += f"**{len(storyboard.scenes)} scenes** — review & edit below, then click **Render Episode**."
 
-    return df, sb_json, info
+    yield df, sb_json, info, gr.update(interactive=True)
 
 
 def render_episode_from_storyboard(
@@ -347,6 +436,14 @@ def render_episode_from_storyboard(
     lora_strength, progress=gr.Progress()
 ):
     """Step 2: Render the (possibly edited) storyboard into a full episode."""
+    # Disable button immediately
+    yield None, None, "⏳ Rendering episode...", None, gr.update(interactive=False)
+
+    animator = create_animator()
+    audio_engine = create_audio_engine()
+    safety_filter = create_safety_filter()
+    exporter = create_exporter()
+
     # Per-request input tracking for monetization compliance
     run_inputs = []
     def _log(action):
@@ -360,7 +457,8 @@ def render_episode_from_storyboard(
     try:
         sb_dict = json.loads(storyboard_json)
     except Exception:
-        return None, None, "**Error:** No storyboard to render. Generate one first.", None
+        yield None, None, "**Error:** No storyboard to render. Generate one first.", None, gr.update(interactive=True)
+        return
 
     from engine.story_engine import Scene, Storyboard
 
@@ -416,6 +514,14 @@ def render_episode_from_storyboard(
         theme=sb_dict.get("theme", ""),
     )
 
+    # Sanitize user-edited content before rendering
+    try:
+        all_text = " ".join(s.narration + " " + s.visual_description for s in scenes)
+        sanitize_and_check_prompt(all_text, safety_filter, max_length=10000)
+    except ValueError as e:
+        yield None, None, f"**Content rejected:** {e}", None, gr.update(interactive=True)
+        return
+
     progress(0.1, desc="Generating animation scenes...")
 
     # Build per-request generation overrides (never mutate global animator)
@@ -447,11 +553,18 @@ def render_episode_from_storyboard(
             progress_callback=anim_progress,
             **gen_kwargs,
         )
+    except ConfigError as e:
+        yield None, None, f"Configuration error: {e}", None, gr.update(interactive=True)
+        return
     except Exception as e:
-        return None, None, f"Animation failed: {e}", None
+        yield None, None, f"Animation failed: {e}", None, gr.update(interactive=True)
+        return
+    finally:
+        animator.cleanup_request_state()
 
     if not episode.get("video_path"):
-        return None, None, "All scenes failed safety.", None
+        yield None, None, "All scenes failed safety.", None, gr.update(interactive=True)
+        return
 
     progress(0.7, desc="Generating narration...")
 
@@ -476,6 +589,10 @@ def render_episode_from_storyboard(
             narration_path=narration["full_narration_path"],
             bgm_path=bgm_path,
         )
+    except ConfigError as e:
+        logger.warning("Audio configuration failed: %s", e)
+        final_video = episode["video_path"]
+        audio_warning = f"\n\n⚠️ **Audio configuration failed:** {e}. Video exported without narration.\n"
     except Exception as e:
         logger.warning("Audio failed: %s", e)
         final_video = episode["video_path"]
@@ -519,7 +636,7 @@ def render_episode_from_storyboard(
     thumbnail = export_result.thumbnail_path if export_result.success else None
     caption_file = export_result.caption_path if export_result.success else None
 
-    return final_video, thumbnail, story_info, caption_file
+    yield final_video, thumbnail, story_info, caption_file, gr.update(interactive=True)
 
 
 # ═════════════════════════════════════════════════════════
@@ -609,12 +726,64 @@ def get_lora_list():
     return text
 
 
+# ── Usage tab helpers ────────────────────────────────────
+from engine.usage_tracker import get_tracker
+
+
+def _build_usage_summary() -> str:
+    """Build a markdown summary of usage totals."""
+    try:
+        summary = get_tracker(CONFIG).get_summary()
+    except Exception:
+        return "*No usage data yet.*"
+
+    if not summary["operations"]:
+        return "*No usage data yet.*"
+
+    total_cents = summary["total_cost_cents"]
+    lines = [f"### Estimated Total: ${total_cents / 100:.2f}\n"]
+    op_labels = {"llm_call": "LLM Calls", "tts_call": "TTS Calls", "video_generation": "Video Generation"}
+    for op, data in summary["operations"].items():
+        label = op_labels.get(op, op)
+        lines.append(f"- **{label}:** {data['count']} calls — ${data['total_cost_cents'] / 100:.2f}")
+        if data["total_tokens"]:
+            lines.append(f"  ({data['total_tokens']:,} tokens)")
+        if data["total_chars"]:
+            lines.append(f"  ({data['total_chars']:,} characters)")
+        if data["total_video_s"]:
+            lines.append(f"  ({data['total_video_s']:.1f}s video)")
+    return "\n".join(lines)
+
+
+def _build_usage_table() -> list[list]:
+    """Build a table of recent usage rows for Gradio Dataframe."""
+    try:
+        rows = get_tracker(CONFIG).get_recent(limit=50)
+    except Exception:
+        return []
+
+    table = []
+    for r in rows:
+        ts = r.get("timestamp", "")[:19].replace("T", " ")
+        table.append([
+            ts,
+            r.get("operation", ""),
+            r.get("provider", "") or "",
+            r.get("tokens_used") or "",
+            r.get("characters_generated") or "",
+            f"{r['video_duration_seconds']:.1f}" if r.get("video_duration_seconds") else "",
+            f"{r['estimated_cost_cents']:.2f}" if r.get("estimated_cost_cents") else "",
+        ])
+    return table
+
+
 # ═════════════════════════════════════════════════════════
 # BUILD GRADIO UI
 # ═════════════════════════════════════════════════════════
 
 def build_ui() -> gr.Blocks:
     """Construct the full Gradio interface with pastel kid-friendly theme."""
+    audio_engine = create_audio_engine()
 
     # Custom pastel theme
     theme = gr.themes.Soft(
@@ -639,7 +808,7 @@ def build_ui() -> gr.Blocks:
         .gr-button { border-radius: 12px !important; }
     """
 
-    with gr.Blocks(title="🎬 AniMate Studio") as app:
+    with gr.Blocks(title="🎬 AniMate Studio", theme=theme, css=custom_css) as app:
         gr.Markdown(
             """
             # 🎬 AniMate Studio
@@ -691,7 +860,7 @@ def build_ui() -> gr.Blocks:
                 quick_btn.click(
                     fn=quick_generate,
                     inputs=[quick_theme, quick_duration, quick_char, quick_style, quick_quality],
-                    outputs=[quick_video, quick_info, quick_story_json],
+                    outputs=[quick_video, quick_info, quick_story_json, quick_btn],
                 )
                 quick_export_btn.click(
                     fn=export_for_reels,
@@ -788,7 +957,7 @@ def build_ui() -> gr.Blocks:
                 ep_storyboard_btn.click(
                     fn=generate_storyboard_preview,
                     inputs=[ep_concept, ep_scenes, ep_char],
-                    outputs=[ep_storyboard_df, ep_storyboard_state, ep_storyboard_info],
+                    outputs=[ep_storyboard_df, ep_storyboard_state, ep_storyboard_info, ep_storyboard_btn],
                 )
                 # ── Step 2 wiring ──
                 ep_render_btn.click(
@@ -796,7 +965,7 @@ def build_ui() -> gr.Blocks:
                     inputs=[ep_storyboard_df, ep_storyboard_state,
                             ep_voice, ep_bgm, ep_char,
                             ep_style, ep_quality, ep_camera, ep_lora_strength],
-                    outputs=[ep_video, ep_thumbnail, ep_info, ep_captions],
+                    outputs=[ep_video, ep_thumbnail, ep_info, ep_captions, ep_render_btn],
                 )
 
             # ── Tab 3: Character Lab ─────────────────────
@@ -858,6 +1027,23 @@ def build_ui() -> gr.Blocks:
                 refresh_btn.click(
                     fn=lambda: (get_character_dropdown_choices(), get_lora_list()),
                     outputs=[preview_name, lora_info],
+                )
+
+            # ── Tab 4: Usage & Costs ─────────────────────
+            with gr.Tab("📊 Usage & Costs", id="usage"):
+                gr.Markdown("*Track API usage and estimated costs across sessions*")
+
+                usage_summary_md = gr.Markdown(value=_build_usage_summary())
+                usage_table = gr.Dataframe(
+                    value=_build_usage_table(),
+                    headers=["Time", "Operation", "Provider", "Tokens", "Chars", "Video (s)", "Cost (¢)"],
+                    label="Recent Activity",
+                    interactive=False,
+                )
+                usage_refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
+                usage_refresh_btn.click(
+                    fn=lambda: (_build_usage_summary(), _build_usage_table()),
+                    outputs=[usage_summary_md, usage_table],
                 )
 
         # ── Footer ───────────────────────────────────────

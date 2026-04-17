@@ -17,8 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
+from engine.config import load_config
 from engine.safety_filter import SafetyFilter, SafetyResult
 from utils.ffmpeg_utils import (
     apply_final_encode,
@@ -64,10 +63,9 @@ class Exporter:
 
     PLATFORMS = {"youtube", "facebook_reels", "tiktok"}
 
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = "config.yaml", config: Optional[dict] = None):
         self._config_path = config_path
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = yaml.safe_load(f)
+        self.config = load_config(config_path=config_path, config=config)
 
         self.output_dir = self.config["app"]["output_dir"]
         self.export_presets = self.config["export"]

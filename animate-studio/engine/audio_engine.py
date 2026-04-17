@@ -13,8 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
+from engine.config import ConfigError, load_config, require_env_secret
 from utils.ffmpeg_utils import (
     add_narration_only,
     get_media_duration,
@@ -40,13 +39,12 @@ class AudioEngine:
       4. Apply to video, adjusting speed if needed
     """
 
-    def __init__(self, config_path: str = "config.yaml"):
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = yaml.safe_load(f)
+    def __init__(self, config_path: str = "config.yaml", config: Optional[dict] = None):
+        self.config = load_config(config_path=config_path, config=config)
 
         audio_cfg = self.config["audio"]
         self.tts_provider = audio_cfg["tts"]["provider"]
-        self.elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY") or audio_cfg["tts"].get("elevenlabs_api_key", "")
+        self.elevenlabs_key = audio_cfg["tts"].get("elevenlabs_api_key", "")
         self.voices = audio_cfg["tts"]["voices"]
         self.default_voice_id = audio_cfg["tts"]["default_voice_id"]
         self.stability = audio_cfg["tts"]["stability"]
@@ -91,10 +89,24 @@ class AudioEngine:
         """
         voice_id = voice_id or self.default_voice_id
 
-        if self.tts_provider == "elevenlabs" and self.elevenlabs_key:
-            return self._generate_elevenlabs(text, output_path, voice_id)
+        char_count = len(text)
+
+        if self.tts_provider == "elevenlabs":
+            self.elevenlabs_key = require_env_secret(self.config, "ELEVENLABS_API_KEY", "ElevenLabs narration")
+            result = self._generate_elevenlabs(text, output_path, voice_id)
         else:
-            return self._generate_edge_tts(text, output_path)
+            result = self._generate_edge_tts(text, output_path)
+
+        # Track usage (best-effort)
+        try:
+            from engine.usage_tracker import get_tracker
+            get_tracker(self.config).log_tts_call(
+                provider=self.tts_provider, characters=char_count, voice_id=voice_id,
+            )
+        except Exception:
+            logger.debug("Usage tracking failed for TTS call", exc_info=True)
+
+        return result
 
     def _generate_elevenlabs(
         self, text: str, output_path: str, voice_id: str

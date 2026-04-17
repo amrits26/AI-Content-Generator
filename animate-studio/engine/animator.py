@@ -24,7 +24,6 @@ from typing import Optional
 
 import numpy as np
 import torch
-import yaml
 from PIL import Image, ImageFilter
 
 try:
@@ -35,6 +34,7 @@ except ImportError:
 
 from engine.animate_diff_engine import AnimateDiffEngine
 from engine.character_manager import CharacterManager
+from engine.config import load_config
 from engine.safety_filter import SafetyFilter
 from engine.story_engine import Scene, Storyboard
 from utils.ffmpeg_utils import concat_videos, frames_to_video, add_crossfade, interpolate_frames, enhance_video
@@ -92,14 +92,20 @@ class Animator:
     generation, frame transitions, character consistency, and safety filtering.
     """
 
-    def __init__(self, config_path: str = "config.yaml", fast_mode: Optional[bool] = None):
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = yaml.safe_load(f)
+    _shared_pipeline = None
+    _shared_pipeline_key: Optional[str] = None
+    _shared_animatediff: Optional[AnimateDiffEngine] = None
+    _shared_animatediff_key: Optional[str] = None
+
+    def __init__(self, config_path: str = "config.yaml", fast_mode: Optional[bool] = None, config: Optional[dict] = None):
+        self.config_path = config_path
+        self.config = load_config(config_path=config_path, config=config)
 
         video_cfg = self.config["models"]["video"]
         perf_cfg = self.config["performance"]
 
         self.model_name = video_cfg["name"]
+        self.model_version = self._build_model_version()
         self.dtype = getattr(torch, video_cfg["dtype"])
         self.device = video_cfg["device"]
         self.enable_cpu_offload = video_cfg["enable_cpu_offload"]
@@ -138,20 +144,35 @@ class Animator:
             cooldown_s=perf_cfg["cooldown_seconds"],
         )
 
-        self.character_manager = CharacterManager(config_path)
-        self.safety_filter = SafetyFilter(config_path)
+        self.character_manager = CharacterManager(config_path, config=self.config)
+        self.safety_filter = SafetyFilter(config_path, config=self.config)
 
         # AnimateDiff real-motion engine
         self._motion_cfg = self.config.get("motion", {})
         self.use_animatediff = self._motion_cfg.get("use_animatediff", False)
-        self._animatediff = AnimateDiffEngine(config_path) if self.use_animatediff else None
+        self._animatediff = None
+        if self.use_animatediff:
+            shared_key = f"{self._motion_cfg.get('base_model_id', '')}|{self._motion_cfg.get('motion_module_path', '')}"
+            if self.__class__._shared_animatediff is None or self.__class__._shared_animatediff_key != shared_key:
+                self.__class__._shared_animatediff = AnimateDiffEngine(config_path, config=self.config)
+                self.__class__._shared_animatediff_key = shared_key
+            self._animatediff = self.__class__._shared_animatediff
 
         self._pipeline = None
+
+    def _build_model_version(self) -> str:
+        motion_model = self.config.get("motion", {}).get("base_model_id", "")
+        pipeline_kind = "animatediff" if self.config.get("motion", {}).get("use_animatediff", False) else "legacy"
+        return f"{self.config['models']['video']['name']}|{motion_model}|{pipeline_kind}"
 
     # ── Pipeline Management ──────────────────────────────
     def load_pipeline(self):
         """Load video generation pipeline with VRAM optimizations."""
         if self._pipeline is not None:
+            return
+
+        if self.__class__._shared_pipeline is not None and self.__class__._shared_pipeline_key == self.model_version:
+            self._pipeline = self.__class__._shared_pipeline
             return
 
         # Auto-detect pipeline class based on model name
@@ -238,6 +259,8 @@ class Animator:
                 logger.info("Attention slicing not supported by this pipeline.")
 
         logger.info("Video pipeline loaded.")
+        self.__class__._shared_pipeline = self._pipeline
+        self.__class__._shared_pipeline_key = self.model_version
 
     def _check_vram_pressure(self):
         """Pause if VRAM usage exceeds threshold. Clear cache if needed."""
@@ -262,11 +285,20 @@ class Animator:
 
     def unload_pipeline(self):
         """Free VRAM by unloading the pipeline."""
+        if self.__class__._shared_pipeline is self._pipeline:
+            self.__class__._shared_pipeline = None
+            self.__class__._shared_pipeline_key = None
         self._pipeline = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         logger.info("Pipeline unloaded — VRAM freed.")
+
+    def cleanup_request_state(self):
+        """Reset mutable request-scoped state from the shared pipeline."""
+        pipeline = self._pipeline or self.__class__._shared_pipeline
+        if pipeline is not None:
+            self.character_manager.unload_lora(pipeline)
 
     # ── Scene Generation ─────────────────────────────────
     def generate_scene(
@@ -424,9 +456,11 @@ class Animator:
             frames = list(raw_frames)
 
         # Safety check on generated frames
-        # Scale sample rate relative to frame count for consistent coverage
-        num_generated = len(frames)
-        sample_rate = max(1, num_generated // 4) if self.fast_mode else max(1, num_generated // 8)
+        safety_cfg = self.config.get("models", {}).get("safety", {})
+        if self.fast_mode:
+            sample_rate = safety_cfg.get("frame_sample_rate_fast", 4)
+        else:
+            sample_rate = safety_cfg.get("frame_sample_rate", 1)
         safety_result = self.safety_filter.scan_frames_batch(frames, sample_rate=sample_rate)
         # Unload CLIP from GPU immediately to free VRAM for next scene
         self.safety_filter.unload_clip()
@@ -442,6 +476,18 @@ class Animator:
                 "safety_passed": False,
                 "safety_result": safety_result,
             }
+
+        # Track usage (best-effort)
+        try:
+            from engine.usage_tracker import get_tracker
+            get_tracker(self.config).log_video_generation(
+                duration_s=scene.duration_s,
+                resolution=f"{gen_width}x{gen_height}",
+                fps=self.fps,
+                pipeline_type="legacy",
+            )
+        except Exception:
+            logger.debug("Usage tracking failed for video generation", exc_info=True)
 
         # Save frames to disk
         scene_dir = os.path.join(
@@ -568,8 +614,11 @@ class Animator:
             self._flush_vram()
 
         # Safety check
-        num_generated = len(all_frames)
-        sample_rate = max(1, num_generated // 4) if self.fast_mode else max(1, num_generated // 8)
+        safety_cfg = self.config.get("models", {}).get("safety", {})
+        if self.fast_mode:
+            sample_rate = safety_cfg.get("frame_sample_rate_fast", 4)
+        else:
+            sample_rate = safety_cfg.get("frame_sample_rate", 1)
         safety_result = self.safety_filter.scan_frames_batch(all_frames, sample_rate=sample_rate)
         self.safety_filter.unload_clip()
         if not safety_result.passed:
@@ -593,6 +642,18 @@ class Animator:
             scene_video = enhanced
         except Exception as e:
             logger.warning("Enhancement failed for scene %d: %s", scene.scene_id, e)
+
+        # Track usage (best-effort)
+        try:
+            from engine.usage_tracker import get_tracker
+            get_tracker(self.config).log_video_generation(
+                duration_s=scene.duration_s,
+                resolution=f"{gen_width}x{gen_height}",
+                fps=clip_fps,
+                pipeline_type="animatediff",
+            )
+        except Exception:
+            logger.debug("Usage tracking failed for video generation", exc_info=True)
 
         return {
             "frames": all_frames,
@@ -724,7 +785,8 @@ class Animator:
                 scene, character_name,
                 style=effective_style, camera_motion=effective_camera,
                 num_inference_steps=effective_steps, gen_height=effective_height,
-                gen_width=effective_width, guidance_scale=effective_guidance,
+                gen_width=effective_width, fps=effective_fps,
+                guidance_scale=effective_guidance,
                 lora_strength=effective_lora_strength,
             )
             cached = self._get_cached_scene(cache_key)
@@ -819,22 +881,28 @@ class Animator:
         num_inference_steps: Optional[int] = None,
         gen_height: Optional[int] = None,
         gen_width: Optional[int] = None,
+        fps: Optional[int] = None,
         guidance_scale: Optional[float] = None,
         lora_strength: Optional[float] = None,
     ) -> str:
         """Generate a cache key from scene content + all generation parameters."""
         parts = [
+            scene.narration,
             scene.visual_description,
             scene.emotion_tone,
             scene.setting,
+            str(scene.duration_s),
             str(character_name),
             str(style if style is not None else self.style),
             str(camera_motion if camera_motion is not None else self.camera_motion),
             str(num_inference_steps if num_inference_steps is not None else self.num_inference_steps),
             str(gen_height if gen_height is not None else self.gen_height),
             str(gen_width if gen_width is not None else self.gen_width),
+            str(fps if fps is not None else self.fps),
             str(guidance_scale if guidance_scale is not None else self.guidance_scale),
             str(lora_strength) if lora_strength is not None else "default",
+            str(self.fast_mode),
+            self.model_version,
             "animatediff" if self.use_animatediff else "legacy",
         ]
         content = "|".join(parts)
@@ -847,10 +915,14 @@ class Animator:
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.json")
         if os.path.exists(cache_file):
             import json
-            with open(cache_file, "r") as f:
+            with open(cache_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if os.path.exists(data.get("video_path", "")):
                 return data
+            try:
+                os.remove(cache_file)
+            except OSError:
+                pass
         return None
 
     def _cache_scene(self, cache_key: str, result: dict):
@@ -862,5 +934,5 @@ class Animator:
             "seed": result.get("seed", 0),
             "safety_passed": result.get("safety_passed", False),
         }
-        with open(cache_file, "w") as f:
+        with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(cache_data, f)

@@ -171,3 +171,26 @@ def test_compliance_facebook_reels_duration(sf):
         platform="facebook_reels",
     )
     assert checks["duration_in_range"] is True
+
+
+# ── Frame scan sample_rate ────────────────────────────────
+
+def test_scan_frames_batch_sample_rate_1_scans_all(sf):
+    """With sample_rate=1, every frame should be scanned."""
+    from PIL import Image
+
+    frames = [Image.new("RGB", (64, 64), "white") for _ in range(6)]
+
+    scanned_indices = []
+
+    def tracking_scan_frame(frame):
+        scanned_indices.append(id(frame))
+        return SafetyResult(passed=True, scan_type="visual")
+
+    sf.scan_frame = tracking_scan_frame
+    result = sf.scan_frames_batch(frames, sample_rate=1)
+
+    assert result.passed is True
+    # With sample_rate=1, all 6 frames must be scanned
+    assert len(scanned_indices) == 6
+    assert scanned_indices == [id(f) for f in frames]

@@ -17,8 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-import yaml
-
+from engine.config import ConfigError, load_config, require_env_secret
 from utils.prompt_templates import (
     get_story_system_prompt,
     get_story_user_prompt,
@@ -67,15 +66,14 @@ class StoryEngine:
     setup → curiosity → challenge → resolution → happy ending
     """
 
-    def __init__(self, config_path: str = "config.yaml"):
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = yaml.safe_load(f)
+    def __init__(self, config_path: str = "config.yaml", config: Optional[dict] = None):
+        self.config = load_config(config_path=config_path, config=config)
 
         story_cfg = self.config["models"]["story"]
         self.provider = story_cfg["provider"]
         self.model_name = story_cfg["model_name"]
         self.base_url = story_cfg.get("openai_base_url", "")
-        self.api_key = os.environ.get("OPENAI_API_KEY") or story_cfg.get("openai_api_key", "")
+        self.api_key = story_cfg.get("openai_api_key", "")
         self.temperature = story_cfg.get("temperature", 0.8)
         self.max_tokens = story_cfg.get("max_tokens", 2048)
 
@@ -147,6 +145,12 @@ class StoryEngine:
             ))
 
         # Fallback: if LLM returned fewer scenes, pad with defaults
+        if len(scenes) < num_scenes:
+            logger.warning(
+                "Storyboard response contained %d/%d scenes; padding missing scenes.",
+                len(scenes), num_scenes,
+            )
+
         while len(scenes) < num_scenes:
             scenes.append(Scene(
                 scene_id=len(scenes) + 1,
@@ -183,6 +187,11 @@ class StoryEngine:
         """Call OpenAI-compatible API (works with Ollama, LM Studio, vLLM, etc.)."""
         from openai import OpenAI
 
+        if self.provider == "openai":
+            self.api_key = require_env_secret(self.config, "OPENAI_API_KEY", "story generation")
+        elif not self.api_key:
+            self.api_key = os.getenv("OPENAI_API_KEY", "")
+
         client = OpenAI(
             base_url=self.base_url,
             api_key=self.api_key or "not-needed",
@@ -196,10 +205,27 @@ class StoryEngine:
             ],
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            timeout=60,
         )
 
         content = response.choices[0].message.content
         logger.debug("LLM response length: %d chars", len(content))
+
+        # Track usage (best-effort — never break generation)
+        try:
+            from engine.usage_tracker import get_tracker
+            usage = getattr(response, "usage", None)
+            if usage:
+                get_tracker(self.config).log_llm_call(
+                    provider=self.provider,
+                    model=self.model_name,
+                    prompt_tokens=getattr(usage, "prompt_tokens", 0),
+                    completion_tokens=getattr(usage, "completion_tokens", 0),
+                    total_tokens=getattr(usage, "total_tokens", 0),
+                )
+        except Exception:
+            logger.debug("Usage tracking failed for LLM call", exc_info=True)
+
         return content
 
     def _parse_response(self, raw: str) -> dict:

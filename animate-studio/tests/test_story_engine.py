@@ -113,3 +113,16 @@ def test_parse_json_with_extra_keys(engine):
     })
     result = engine._parse_response(raw)
     assert result["title"] == "Extra"
+
+
+def test_generate_storyboard_surfaces_story_parse_error(engine):
+    engine._call_llm = lambda system_prompt, user_prompt: "not-json"
+
+    with pytest.raises(StoryParseError):
+        engine.generate_storyboard(
+            theme="Billy Bunny learns to share",
+            character_name="Billy",
+            character_type="bunny",
+            num_scenes=3,
+            scene_duration=10.0,
+        )

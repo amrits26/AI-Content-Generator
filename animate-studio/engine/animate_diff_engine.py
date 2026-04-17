@@ -9,8 +9,9 @@ import os
 from typing import Optional
 
 import torch
-import yaml
 from PIL import Image
+
+from engine.config import load_config
 
 logger = logging.getLogger("animate_studio.animate_diff")
 
@@ -18,9 +19,8 @@ logger = logging.getLogger("animate_studio.animate_diff")
 class AnimateDiffEngine:
     """Generate real motion clips using AnimateDiff (SD1.5 + motion adapter)."""
 
-    def __init__(self, config_path: str = "config.yaml"):
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+    def __init__(self, config_path: str = "config.yaml", config: Optional[dict] = None):
+        config = load_config(config_path=config_path, config=config)
 
         motion_cfg = config.get("motion", {})
         self.enabled = motion_cfg.get("use_animatediff", False)

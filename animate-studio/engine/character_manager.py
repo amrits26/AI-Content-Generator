@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import yaml
 from PIL import Image
+
+from engine.config import load_config
 
 logger = logging.getLogger("animate_studio.character")
 
@@ -59,9 +60,8 @@ class CharacterManager:
     for maintaining consistent character appearance across scenes.
     """
 
-    def __init__(self, config_path: str = "config.yaml"):
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = yaml.safe_load(f)
+    def __init__(self, config_path: str = "config.yaml", config: Optional[dict] = None):
+        self.config = load_config(config_path=config_path, config=config)
 
         self.loras_dir = self.config["app"]["loras_dir"]
         self.references_dir = os.path.join(self.config["app"]["assets_dir"], "references")

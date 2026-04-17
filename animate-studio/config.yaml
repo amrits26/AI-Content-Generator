@@ -62,6 +62,8 @@ models:
   safety:
     clip_model: "openai/clip-vit-large-patch14"
     nsfk_model: "yasserrmd/nsfk-detection"
+    frame_sample_rate: 1            # 1 = scan every frame (safest); higher = skip frames
+    frame_sample_rate_fast: 4       # used when fast_mode is enabled
     blocked_concepts:
       - "gore"
       - "horror"
@@ -80,8 +82,7 @@ models:
     # Use local LLM or OpenAI-compatible API
     provider: "local"           # "local" | "openai" | "ollama"
     model_name: "llama3.2"      # Model name for ollama
-    openai_base_url: "http://localhost:11434/v1"
-    openai_api_key: ""          # Prefer env var OPENAI_API_KEY; or set here
+    openai_base_url: "http://localhost:11434/v1"  # Override with OPENAI_BASE_URL
     temperature: 0.8
     max_tokens: 2048
 
@@ -89,7 +90,6 @@ models:
 audio:
   tts:
     provider: "elevenlabs"      # "elevenlabs" | "edge_tts"
-    elevenlabs_api_key: ""      # Prefer env var ELEVENLABS_API_KEY; or set here
     voices:
       - id: "EXAVITQu4vr4xnSDxMaL"
         name: "Rachel (Warm)"
@@ -210,3 +210,11 @@ compliance:
   require_ai_disclosure: true
   require_royalty_free_audio: true
   ai_disclosure_text: "This video was created with AI assistance using AniMate Studio. Story and creative direction by human creator."
+
+# -- Usage Tracking --
+usage:
+  # db_path: "./output/usage.db"     # default; override to change location
+  cost_rates:
+    llm_per_1k_tokens_cents: 2.0     # ~$0.02/1k tokens (adjust for your provider)
+    tts_per_1k_chars_cents: 30.0     # ~$0.30/1k characters (ElevenLabs estimate)
+    video_per_minute_cents: 0.0      # 0 for local GPU; set >0 if using cloud GPU

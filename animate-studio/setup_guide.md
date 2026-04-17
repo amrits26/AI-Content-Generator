@@ -55,16 +55,14 @@ ffmpeg -version
 
 ## 3. API Keys Configuration
 
-Edit `config.yaml`:
+Set secrets in your PowerShell session or Windows environment variables. Do not place provider credentials in `config.yaml`.
 
 ### ElevenLabs (Narration — Optional but Recommended)
 1. Sign up at [elevenlabs.io](https://elevenlabs.io)
 2. Go to Profile → API Keys
-3. Copy your key into `config.yaml`:
-```yaml
-audio:
-  tts:
-    elevenlabs_api_key: "your-key-here"
+3. Set your key:
+```powershell
+$env:ELEVENLABS_API_KEY="your-key-here"
 ```
 
 > **Free tier:** 10,000 characters/month. Enough for ~10 episodes.  
@@ -87,14 +85,12 @@ models:
 ```
 
 **Option B: OpenAI API**
-```yaml
-models:
-  story:
-    provider: "openai"
-    model_name: "gpt-4o-mini"
-    openai_base_url: "https://api.openai.com/v1"
-    openai_api_key: "sk-your-key-here"
+```powershell
+$env:OPENAI_API_KEY="sk-your-key-here"
+$env:OPENAI_BASE_URL="https://api.openai.com/v1"
 ```
+
+Keep `models.story.provider` set to `openai` in `config.yaml` when using the hosted API.
 
 ---
 
@@ -233,3 +229,41 @@ Before uploading content, verify:
 | Safety filter too strict | Lower `safety_threshold` in config.yaml (default 0.25) |
 | Edge TTS fails | `pip install edge-tts --upgrade` |
 | GPU overheating | Lower `gpu_temp_limit_c` to 78 in config.yaml |
+
+---
+
+## Safety Frame Scan Configuration
+
+The safety filter scans generated frames for blocked visual concepts using CLIP similarity. The scan rate is configurable in `config.yaml`:
+
+```yaml
+models:
+  safety:
+    frame_sample_rate: 1        # 1 = scan every frame (safest, default for kids content)
+    frame_sample_rate_fast: 4   # used when fast_mode is enabled
+```
+
+Set `frame_sample_rate: 1` (default) for maximum safety. Increase to skip frames if generation speed is a priority and you trust the pipeline output.
+
+---
+
+## Usage Tracking
+
+API usage is logged automatically to `output/usage.db` (SQLite). The **Usage & Costs** tab in the Gradio UI shows:
+
+- Total tokens consumed by LLM calls
+- Characters sent to TTS
+- Video duration generated
+- Estimated cost per operation
+
+Cost rates can be customized in `config.yaml`:
+
+```yaml
+usage:
+  cost_rates:
+    llm_per_1k_tokens_cents: 2.0     # adjust for your LLM provider
+    tts_per_1k_chars_cents: 30.0     # ElevenLabs estimate
+    video_per_minute_cents: 0.0      # 0 for local GPU
+```
+
+Set `video_per_minute_cents` to a non-zero value if you use cloud GPU services for video generation.

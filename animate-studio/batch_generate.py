@@ -27,7 +27,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-import yaml
+from engine.config import load_config
 
 # ── Paths ────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -167,10 +167,13 @@ def generate_one_video(
 
     # 2. Animation
     logger.info("Animating %d scenes...", len(storyboard.scenes))
-    episode = animator.generate_episode(
-        storyboard=storyboard,
-        character_name=char_name if character_manager.get_profile(char_name) else None,
-    )
+    try:
+        episode = animator.generate_episode(
+            storyboard=storyboard,
+            character_name=char_name if character_manager.get_profile(char_name) else None,
+        )
+    finally:
+        animator.cleanup_request_state()
 
     if not episode.get("video_path"):
         raise RuntimeError("All scenes failed safety checks — no video produced.")
@@ -220,8 +223,7 @@ def run_batch(csv_path: str, cooldown_s: int, resume: bool):
     _setup_tokenizer()
 
     # Load config
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = load_config(CONFIG_PATH)
 
     # Load themes
     if not os.path.exists(csv_path):
@@ -257,12 +259,12 @@ def run_batch(csv_path: str, cooldown_s: int, resume: bool):
     from engine.safety_filter import SafetyFilter
     from engine.exporter import Exporter
 
-    story_engine = StoryEngine(CONFIG_PATH)
-    character_manager = CharacterManager(CONFIG_PATH)
-    animator = Animator(CONFIG_PATH, fast_mode=True)
-    audio_engine = AudioEngine(CONFIG_PATH)
-    safety_filter = SafetyFilter(CONFIG_PATH)
-    exporter = Exporter(CONFIG_PATH)
+    story_engine = StoryEngine(CONFIG_PATH, config=config)
+    character_manager = CharacterManager(CONFIG_PATH, config=config)
+    animator = Animator(CONFIG_PATH, fast_mode=True, config=config)
+    audio_engine = AudioEngine(CONFIG_PATH, config=config)
+    safety_filter = SafetyFilter(CONFIG_PATH, config=config)
+    exporter = Exporter(CONFIG_PATH, config=config)
 
     total = len(themes)
     successes = len(state["completed"])
