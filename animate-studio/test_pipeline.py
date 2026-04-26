@@ -113,7 +113,7 @@ if __name__ == "__main__":
     storyboard = test_step("Story Engine (Ollama)", test_story)
     audio_path = test_step("Audio Engine (Edge TTS)", test_audio)
     animator = test_step("CogVideoX Pipeline Load", test_pipeline_load)
-    
+
     if animator and storyboard:
         scene_result = test_step("Generate One Scene", lambda: test_generate_scene(animator, storyboard))
     else:
@@ -128,7 +128,7 @@ if __name__ == "__main__":
     print(f"  Audio:      {'PASS' if audio_path else 'FAIL'}")
     print(f"  Pipeline:   {'PASS' if animator else 'FAIL'}")
     print(f"  Scene Gen:  {'PASS' if scene_result and scene_result.get('video_path') else 'FAIL'}")
-    
+
     if scene_result and scene_result.get("video_path"):
         print(f"\n  Generated video: {scene_result['video_path']}")
     print()

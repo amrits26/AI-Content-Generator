@@ -1,3 +1,10 @@
+import datetime
+from datetime import datetime, timedelta
+import json
+import time
+import os
+import re
+import math
 """
 ═══════════════════════════════════════════════════════════════
 AniMate Studio — Story Engine
@@ -9,13 +16,24 @@ Supports: Local (Ollama), OpenAI API, or compatible endpoints.
 ═══════════════════════════════════════════════════════════════
 """
 
+
 import json
 import logging
 import os
 import re
+import datetime
+from datetime import datetime
+import time
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
+
+import threading
+import time
+
+# Add tenacity for retry/circuit breaker
+from tenacity import retry, stop_after_attempt, wait_exponential, RetryError, before_sleep_log
 
 from engine.config import ConfigError, load_config, require_env_secret
 from utils.prompt_templates import (
@@ -58,6 +76,7 @@ class Storyboard:
         self.total_duration_s = sum(s.duration_s for s in self.scenes)
 
 
+
 class StoryEngine:
     """
     Generates structured storyboards from a one-sentence theme.
@@ -66,120 +85,165 @@ class StoryEngine:
     setup → curiosity → challenge → resolution → happy ending
     """
 
+    def _connectivity_guard(self):
+        """
+        Validate base_url and diagnose connectivity before LLM call.
+        """
+        import socket
+        import requests
+        # Ensure base_url is valid
+        if not (self.base_url.startswith("http://") or self.base_url.startswith("https://")):
+            logger.error(f"Invalid base_url: {self.base_url}. Must start with http:// or https://")
+            raise ValueError(f"Invalid base_url: {self.base_url}. Must start with http:// or https://")
+        # Try to connect to base_url host
+        try:
+            host = self.base_url.split('//')[1].split('/')[0]
+            host_only = host.split(':')[0]
+            port = int(host.split(':')[1]) if ':' in host else 80
+            with socket.create_connection((host_only, port), timeout=3):
+                logger.info(f"Connectivity check: {host_only}:{port} reachable.")
+        except Exception as e:
+            logger.warning(f"Connectivity check failed for {self.base_url}: {e}")
+        # Ping Ollama and OpenAI endpoints
+        endpoints = ["http://localhost:11434", "https://api.openai.com"]
+        for url in endpoints:
+            try:
+                resp = requests.get(url, timeout=2)
+                logger.info(f"Ping {url}: {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"Ping {url} failed: {e}")
+        # Log user-facing fix if any endpoint is unreachable
+        logger.info("If you see connection errors, check your base_url and ensure Ollama or OpenAI is running.")
+
     def __init__(self, config_path: str = "config.yaml", config: Optional[dict] = None):
         self.config = load_config(config_path=config_path, config=config)
 
-        story_cfg = self.config["models"]["story"]
-        self.provider = story_cfg["provider"]
-        self.model_name = story_cfg["model_name"]
-        self.base_url = story_cfg.get("openai_base_url", "")
+        # Beast Mode config
+        self.beast_mode_cfg = self.config.get("beast_mode", {})
+        self.beast_mode_enabled = self.beast_mode_cfg.get("enabled", False)
+
+        story_cfg = self.config.get("models", {}).get("story", {})
+        self.provider = story_cfg.get("provider", "local")
+        self.model_name = story_cfg.get("model_name", "llama3.2")
+        self.base_url = story_cfg.get("openai_base_url", "http://localhost:11434/v1")
         self.api_key = story_cfg.get("openai_api_key", "")
         self.temperature = story_cfg.get("temperature", 0.8)
         self.max_tokens = story_cfg.get("max_tokens", 2048)
 
-    def generate_storyboard(
+
+    def generate_manifest(
         self,
         theme: str,
         character_name: str = "Billy",
         character_type: str = "bunny",
         num_scenes: int = 5,
         scene_duration: float = 10.0,
-    ) -> Storyboard:
+    ) -> dict:
         """
-        Generate a complete storyboard from a theme.
-
-        Args:
-            theme: One-sentence story concept (e.g., "Billy Bunny learns to share")
-            character_name: Main character name
-            character_type: Animal type (bunny, duckling, kitten, etc.)
-            num_scenes: Number of scenes (3-8)
-            scene_duration: Target duration per scene in seconds
+        Agentic workflow: Story Architect → Cinematographer → Visual Continuity.
+        Returns manifest dict (to be saved as manifest.json) and style lock dict.
         """
-        num_scenes = max(3, min(8, num_scenes))
-
-        system_prompt = get_story_system_prompt()
-        user_prompt = get_story_user_prompt(
-            theme=theme,
-            character_name=character_name,
-            character_type=character_type,
-            num_scenes=num_scenes,
+        # 1. Story Architect: Slice input into action/narrative blocks
+        architect_prompt = (
+            f"You are a Story Architect. Given the theme '{theme}', "
+            f"character '{character_name}' ({character_type}), and {num_scenes} scenes, "
+            "break the story into a sequence of 5-15s action blocks with clear narrative flow. "
+            "Output a JSON list of scenes, each with: scene_id, action, emotion_tone, setting, and intended camera movement."
         )
+        architect_response = self._call_llm(architect_prompt, "Respond in JSON only.")
+        try:
+            architect_scenes = json.loads(architect_response)
+        except Exception as e:
+            logger.error(f"Failed to parse Story Architect response: {e}\n{architect_response}")
+            raise StoryParseError("Story Architect failed.")
 
-        logger.info("Generating storyboard: '%s' (%d scenes)", theme, num_scenes)
-
-        raw_response = self._call_llm(system_prompt, user_prompt)
-        story_data = self._parse_response(raw_response)
-
-        scenes = []
-        for s in story_data.get("scenes", []):
-            setting = s.get("setting", "meadow")
-            visual = s.get("visual_description", "")
-            narration = s.get("narration", "")
-            emotion_tone = s.get("emotion_tone", "happy")
-
-            if isinstance(setting, dict):
-                setting = setting.get("name") or setting.get("value") or "meadow"
-            if isinstance(visual, dict):
-                visual = visual.get("description") or visual.get("text") or json.dumps(visual)
-            if isinstance(narration, dict):
-                narration = narration.get("text") or narration.get("narration") or json.dumps(narration)
-            if isinstance(emotion_tone, dict):
-                emotion_tone = emotion_tone.get("value") or emotion_tone.get("tone") or "happy"
-
-            setting = str(setting)
-            visual = str(visual)
-            narration = str(narration)
-            emotion_tone = str(emotion_tone)
-
-            # Enrich visual description with SCENE_SETTINGS background
-            setting_desc = SCENE_SETTINGS.get(setting, SCENE_SETTINGS.get("meadow", ""))
-            if setting_desc and setting_desc.lower() not in visual.lower():
-                visual = f"{visual}, {setting_desc}"
-            scenes.append(Scene(
-                scene_id=s.get("scene_id", len(scenes) + 1),
-                narration=narration,
-                visual_description=visual,
-                emotion_tone=emotion_tone,
-                setting=setting,
-                duration_s=scene_duration,
-            ))
-
-        # Fallback: if LLM returned fewer scenes, pad with defaults
-        if len(scenes) < num_scenes:
-            logger.warning(
-                "Storyboard response contained %d/%d scenes; padding missing scenes.",
-                len(scenes), num_scenes,
+        # 2. Cinematographer Agent: Inject camera metadata
+        for scene in architect_scenes:
+            cam_prompt = (
+                f"You are a Cinematographer. For the following scene, suggest a camera movement and angle.\n"
+                f"Scene: {scene['action']}\n"
+                "Respond with a @camera: directive (e.g., @camera: tracking-shot, low-angle-dolly)."
             )
+            cam_response = self._call_llm(cam_prompt, "Respond with a single @camera: directive.")
+            scene['camera'] = cam_response.strip()
 
-        while len(scenes) < num_scenes:
-            scenes.append(Scene(
-                scene_id=len(scenes) + 1,
-                narration=f"{character_name} smiles happily.",
-                visual_description=f"{character_name} the {character_type} standing in a sunny meadow, smiling",
-                emotion_tone="happy",
-                setting="meadow",
-                duration_s=scene_duration,
-            ))
-
-        storyboard = Storyboard(
-            title=story_data.get("title", theme),
-            moral=story_data.get("moral", "Be kind to others."),
-            scenes=scenes[:num_scenes],
-            character_name=character_name,
-            character_type=character_type,
-            theme=theme,
+        # 3. Visual Continuity Agent: Style Lock for each character
+        style_lock_prompt = (
+            f"You are a Visual Continuity Agent. For character '{character_name}' ({character_type}), "
+            "define a style lock JSON with exact hex color codes, fur/skin texture, and unique accessories. "
+            "Example: {\"fur_color\": \"#F7C8D0\", \"bow_color\": \"#FF69B4\", \"fur_texture\": \"soft, plush\", \"accessory\": \"pink bow\"}"
         )
+        style_lock_response = self._call_llm(style_lock_prompt, "Respond in JSON only.")
+        try:
+            style_lock = json.loads(style_lock_response)
+        except Exception as e:
+            logger.error(f"Failed to parse Style Lock: {e}\n{style_lock_response}")
+            style_lock = {}
 
-        logger.info(
-            "Storyboard ready: '%s' — %d scenes, %.1fs total",
-            storyboard.title, len(storyboard.scenes), storyboard.total_duration_s,
-        )
-        return storyboard
+        # Compose manifest
+        manifest = {
+            "title": f"{character_name} — {theme}",
+            "theme": theme,
+            "character": {
+                "name": character_name,
+                "type": character_type,
+                "style_lock": style_lock,
+            },
+            "scenes": architect_scenes,
+            "created_at": datetime.now().isoformat(),
+        }
+        # Save manifest.json (optional: can be handled by caller)
+        with open("manifest.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        logger.info(f"Manifest generated with {len(architect_scenes)} scenes and style lock.")
+        return manifest, style_lock
 
+
+    # Manual circuit breaker: open after 3 consecutive failures, reset after 60s
+    class ManualCircuitBreaker:
+        def __init__(self, fail_max=3, reset_timeout=60):
+            self.fail_max = fail_max
+            self.reset_timeout = reset_timeout
+            self.failure_count = 0
+            self.lock = threading.Lock()
+            self.opened_at = None
+        def __call__(self, func):
+            def wrapper(*args, **kwargs):
+                with self.lock:
+                    if self.opened_at and (time.time() - self.opened_at < self.reset_timeout):
+                        raise RuntimeError("Circuit breaker is open")
+                    if self.opened_at and (time.time() - self.opened_at >= self.reset_timeout):
+                        self.failure_count = 0
+                        self.opened_at = None
+                try:
+                    result = func(*args, **kwargs)
+                except Exception as e:
+                    with self.lock:
+                        self.failure_count += 1
+                        if self.failure_count >= self.fail_max:
+                            self.opened_at = time.time()
+                            logger.warning(f"Manual circuit breaker tripped for {func.__name__}")
+                    raise
+                return result
+            return wrapper
+    _llm_circuit_breaker = ManualCircuitBreaker(fail_max=3, reset_timeout=60)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    @_llm_circuit_breaker
     def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Call the configured LLM provider."""
+        """Call the configured LLM provider with retry and circuit breaker."""
+        self._connectivity_guard()
         if self.provider in ("openai", "ollama", "local"):
-            return self._call_openai_compatible(system_prompt, user_prompt)
+            try:
+                return self._call_openai_compatible(system_prompt, user_prompt)
+            except Exception as e:
+                logger.warning(f"LLM call failed: {type(e).__name__}: {e}")
+                raise
         else:
             raise ValueError(f"Unknown LLM provider: {self.provider}")
 

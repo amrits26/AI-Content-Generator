@@ -148,16 +148,21 @@ def generate_one_video(
 
     # Map duration to scene count
     if duration <= 15:
-        num_scenes = 2
+        num_scenes = 1
+        scene_duration = duration
     elif duration <= 30:
+        num_scenes = 2
+        scene_duration = duration / num_scenes
+    elif duration <= 60:
         num_scenes = 3
+        scene_duration = duration / num_scenes
     else:
         num_scenes = 5
-    scene_duration = duration / num_scenes
+        scene_duration = duration / num_scenes
 
     # 1. Story generation
     logger.info("Generating storyboard for: %s", theme)
-    storyboard = story_engine.generate_storyboard(
+    manifest, style_lock = story_engine.generate_manifest(
         theme=theme,
         character_name=char_name,
         character_type=char_type,
@@ -270,14 +275,19 @@ def run_batch(csv_path: str, cooldown_s: int, resume: bool):
     successes = len(state["completed"])
     failures = len(state["failed"])
 
-    for idx in range(start_index, total):
-        entry = themes[idx]
+
+    # Beast Mode: Parallel rendering
+    beast_mode_cfg = config.get("beast_mode", {})
+    parallel_cfg = beast_mode_cfg.get("parallel_rendering", {})
+    parallel_enabled = parallel_cfg.get("enabled", False)
+    max_workers = parallel_cfg.get("max_workers", 2)
+
+    def process_entry(idx, entry):
         theme = entry["theme"]
         logger.info(
             "━━━ [%d/%d] Theme: %s ━━━", idx + 1, total, theme,
         )
         _write_batch_log(f"[{idx + 1}/{total}] START: {theme}")
-
         t0 = time.time()
         try:
             result = generate_one_video(
@@ -291,67 +301,136 @@ def run_batch(csv_path: str, cooldown_s: int, resume: bool):
                 character_manager=character_manager,
             )
             elapsed = time.time() - t0
-            successes += 1
-
-            state["completed"].append({
-                "index": idx,
-                "theme": theme,
-                "title": result["title"],
-                "video_path": result["video_path"],
-                "elapsed_s": round(elapsed, 1),
-                "timestamp": datetime.now().isoformat(),
-            })
-            state["last_index"] = idx
-            save_state(state)
-
-            msg = (
-                f"[{idx + 1}/{total}] OK: \"{result['title']}\" -> "
-                f"{result['video_path']} ({elapsed:.0f}s)"
-            )
-            logger.info(msg)
-            _write_batch_log(msg)
-
+            return (idx, True, result, elapsed, None)
         except Exception as e:
             elapsed = time.time() - t0
-            failures += 1
-            error_msg = str(e)
             tb = traceback.format_exc()
+            return (idx, False, str(e), elapsed, tb)
 
-            state["failed"].append({
-                "index": idx,
-                "theme": theme,
-                "error": error_msg,
-                "elapsed_s": round(elapsed, 1),
-                "timestamp": datetime.now().isoformat(),
-            })
-            state["last_index"] = idx
-            save_state(state)
-
-            msg = f"[{idx + 1}/{total}] FAIL: {theme} — {error_msg}"
-            logger.error(msg)
-            logger.debug(tb)
-            _write_batch_log(msg)
-
-        # Progress summary
-        remaining = total - idx - 1
-        logger.info(
-            "Progress: %d OK / %d FAIL / %d remaining",
-            successes, failures, remaining,
-        )
-
-        # Free VRAM between videos
-        gc.collect()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-
-        # Cooldown between videos (let GPU cool)
-        if remaining > 0:
-            logger.info("Cooling down for %ds before next video...", cooldown_s)
-            time.sleep(cooldown_s)
+    if parallel_enabled:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        logger.info(f"Beast Mode parallel rendering enabled (max_workers={max_workers})")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_entry, idx, themes[idx]): idx for idx in range(start_index, total)}
+            for future in as_completed(futures):
+                idx = futures[future]
+                entry = themes[idx]
+                theme = entry["theme"]
+                try:
+                    idx, ok, result, elapsed, tb = future.result()
+                    if ok:
+                        successes += 1
+                        state["completed"].append({
+                            "index": idx,
+                            "theme": theme,
+                            "title": result["title"],
+                            "video_path": result["video_path"],
+                            "elapsed_s": round(elapsed, 1),
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                        msg = (
+                            f"[{idx + 1}/{total}] OK: \"{result['title']}\" -> "
+                            f"{result['video_path']} ({elapsed:.0f}s)"
+                        )
+                        logger.info(msg)
+                        _write_batch_log(msg)
+                    else:
+                        failures += 1
+                        state["failed"].append({
+                            "index": idx,
+                            "theme": theme,
+                            "error": result,
+                            "elapsed_s": round(elapsed, 1),
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                        msg = f"[{idx + 1}/{total}] FAIL: {theme} — {result}"
+                        logger.error(msg)
+                        logger.debug(tb)
+                        _write_batch_log(msg)
+                    state["last_index"] = idx
+                    save_state(state)
+                    # Progress summary
+                    remaining = total - idx - 1
+                    logger.info(
+                        "Progress: %d OK / %d FAIL / %d remaining",
+                        successes, failures, remaining,
+                    )
+                except Exception as e:
+                    logger.error(f"Exception in parallel batch: {e}")
+    else:
+        for idx in range(start_index, total):
+            entry = themes[idx]
+            theme = entry["theme"]
+            logger.info(
+                "━━━ [%d/%d] Theme: %s ━━━", idx + 1, total, theme,
+            )
+            _write_batch_log(f"[{idx + 1}/{total}] START: {theme}")
+            t0 = time.time()
+            try:
+                result = generate_one_video(
+                    theme_entry=entry,
+                    config=config,
+                    story_engine=story_engine,
+                    animator=animator,
+                    audio_engine=audio_engine,
+                    safety_filter=safety_filter,
+                    exporter=exporter,
+                    character_manager=character_manager,
+                )
+                elapsed = time.time() - t0
+                successes += 1
+                state["completed"].append({
+                    "index": idx,
+                    "theme": theme,
+                    "title": result["title"],
+                    "video_path": result["video_path"],
+                    "elapsed_s": round(elapsed, 1),
+                    "timestamp": datetime.now().isoformat(),
+                })
+                state["last_index"] = idx
+                save_state(state)
+                msg = (
+                    f"[{idx + 1}/{total}] OK: \"{result['title']}\" -> "
+                    f"{result['video_path']} ({elapsed:.0f}s)"
+                )
+                logger.info(msg)
+                _write_batch_log(msg)
+            except Exception as e:
+                elapsed = time.time() - t0
+                failures += 1
+                error_msg = str(e)
+                tb = traceback.format_exc()
+                state["failed"].append({
+                    "index": idx,
+                    "theme": theme,
+                    "error": error_msg,
+                    "elapsed_s": round(elapsed, 1),
+                    "timestamp": datetime.now().isoformat(),
+                })
+                state["last_index"] = idx
+                save_state(state)
+                msg = f"[{idx + 1}/{total}] FAIL: {theme} — {error_msg}"
+                logger.error(msg)
+                logger.debug(tb)
+                _write_batch_log(msg)
+            # Progress summary
+            remaining = total - idx - 1
+            logger.info(
+                "Progress: %d OK / %d FAIL / %d remaining",
+                successes, failures, remaining,
+            )
+            # Free VRAM between videos
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            # Cooldown between videos (let GPU cool)
+            if remaining > 0:
+                logger.info("Cooling down for %ds before next video...", cooldown_s)
+                time.sleep(cooldown_s)
 
     # Final summary
     summary = (

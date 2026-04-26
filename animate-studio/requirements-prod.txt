@@ -1,0 +1,19 @@
+# AniMate Studio — Production Requirements (Pinned)
+gradio==4.16.0
+pandas==2.2.2
+numpy==1.26.4
+torch==2.2.2
+Pillow==10.3.0
+tenacity==8.2.3
+psutil==5.9.8
+sentencepiece==0.2.0
+tiktoken==0.7.0
+accelerate==0.28.0
+ffmpeg-python==0.2.0
+realesrgan==0.4.1
+fastapi==0.110.2
+uvicorn==0.29.0
+requests==2.31.0
+python-dotenv==1.0.1
+sqlite-utils==3.36
+# Add any other runtime dependencies here

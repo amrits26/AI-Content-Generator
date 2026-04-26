@@ -22,7 +22,7 @@ with torch.no_grad():
         print(f"text_embeds shape: {full_out.text_embeds.shape}")
     if hasattr(full_out, 'image_embeds'):
         print(f"image_embeds shape: {full_out.image_embeds.shape}")
-    
+
     # Also try text_projection directly
     text_out = model.text_model(**text_inputs)
     pooled = text_out.pooler_output
@@ -30,7 +30,7 @@ with torch.no_grad():
     if hasattr(model, 'text_projection'):
         projected = model.text_projection(pooled)
         print(f"text_projection shape: {projected.shape}")
-    
+
     img_out = model.vision_model(**img_inputs)
     img_pooled = img_out.pooler_output
     print(f"\nvision_model pooler_output shape: {img_pooled.shape}")

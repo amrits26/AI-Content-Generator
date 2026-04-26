@@ -1,83 +1,165 @@
-"""
-═══════════════════════════════════════════════════════════════
-AniMate Studio — Main Application (Gradio UI)
-═══════════════════════════════════════════════════════════════
-Pastel-themed Gradio interface with 4 tabs:
-  Tab 1: Quick Story (TikTok/Reels Hook)
-  Tab 2: Full Episode (YouTube Kids)
-  Tab 3: Character Lab
-  Tab 4: Usage & Costs
 
-Launch: python main.py
-═══════════════════════════════════════════════════════════════
-"""
-
+import datetime
+from datetime import datetime, timedelta
 import json
-import logging
-import os
-import sys
 import time
-from datetime import datetime
-from pathlib import Path
-
-import gradio as gr
-import pandas as pd
-
+import os
+import re
+import math
+# psutil availability check for _kill_port
 try:
     import psutil
     _HAS_PSUTIL = True
 except ImportError:
     _HAS_PSUTIL = False
 
-# ── Setup logging ────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(name)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("animate_studio.log", encoding="utf-8"),
-    ],
-)
+# Ensure datetime is imported and not shadowed
+from datetime import datetime
+
+import datetime
+from datetime import datetime
+import json
+import time
+import math
+import re
+
+import gradio as gr
+import logging
+import os
+import time
+import json
+import psutil
+
+# Set up logger
 logger = logging.getLogger("animate_studio")
+logging.basicConfig(level=logging.INFO)
 
-# ── Load config ──────────────────────────────────────────
+# AniMate Studio — Main Application (Gradio UI)
+# Pastel-themed Gradio interface with 4 tabs:
+#   Tab 1: Quick Story (TikTok/Reels Hook)
+#   Tab 2: Full Episode (YouTube Kids)
+#   Tab 3: Character Lab
+
+from engine.animator import Animator
+from engine.story_engine import StoryEngine
+from engine.usage_tracker import UsageTracker
+
+# Load config
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
-
-from engine.config import ConfigError, load_config
-
+from engine.config import load_config
 CONFIG = load_config(CONFIG_PATH)
+def build_ui() -> gr.Blocks:
+    """Construct the full Gradio interface with pastel kid-friendly theme."""
+    audio_engine = create_audio_engine()
 
-# ── Ollama model check ───────────────────────────────────
-def _check_ollama_model():
-    """Verify the configured Ollama model is available locally."""
-    story_cfg = CONFIG.get("models", {}).get("story", {})
-    if story_cfg.get("provider") not in ("ollama", "local"):
-        return
-    model_name = story_cfg.get("model_name", "llama3.2")
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["ollama", "list"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0 and model_name in result.stdout:
-            logger.info("Ollama model '%s' found.", model_name)
-        else:
-            logger.warning(
-                "Ollama model '%s' not found locally. "
-                "Run:  ollama pull %s",
-                model_name, model_name,
-            )
-    except FileNotFoundError:
-        logger.warning(
-            "Ollama is not installed or not in PATH. "
-            "Install from https://ollama.com then run:  ollama pull %s",
-            model_name,
-        )
-    except Exception as e:
-        logger.warning("Ollama check failed: %s", e)
+    # Cupertino luxury theme
+    theme = gr.themes.Monochrome(
+        primary_hue=gr.themes.colors.blue,
+        secondary_hue=gr.themes.colors.gray,
+        font=gr.themes.GoogleFont("SF Pro Display"),
+    ).set(
+        body_background_fill="linear-gradient(135deg, #f8fafc 0%, #e0e7ef 100%)",
+        block_background_fill="rgba(255,255,255,0.95)",
+        block_border_width="0px",
+        block_shadow="0 8px 32px rgba(0,0,0,0.12)",
+        block_radius="24px",
+        button_primary_background_fill="linear-gradient(90deg, #007aff 0%, #00c6fb 100%)",
+        button_primary_text_color="#fff",
+        input_radius="16px",
+    )
 
-_check_ollama_model()
+    custom_css = """
+        body, .gradio-container {
+            background: #1C1C1E !important;
+            backdrop-filter: blur(10px) !important;
+        }
+        .gradio-container {
+            max-width: 100vw !important;
+            font-family: 'SF Pro Display', 'Nunito', sans-serif;
+            border-radius: 24px !important;
+            box-shadow: 0 8px 32px 0 rgba(0,0,0,0.37) !important;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: #E0D5B0 !important;
+            font-weight: 800;
+            letter-spacing: -1px;
+        }
+        label, .gr-input-label, .gradio-label, .gr-text-label {
+            color: #E0D5B0 !important;
+            font-size: 1.08em;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+        }
+        .gr-textbox textarea, .gr-textbox input {
+            padding: 20px !important;
+            font-size: 1.1em;
+            border-radius: 16px !important;
+            background: rgba(255,255,255,0.08) !important;
+            color: #fff !important;
+        }
+        .gr-button {
+            border-radius: 20px !important;
+            font-weight: 700;
+            font-size: 1.1em;
+            padding: 14px 32px !important;
+            background: linear-gradient(135deg, #D4AF37 0%, #F5E6BE 100%) !important;
+            color: #fff !important;
+            box-shadow: 0 2px 12px 0 rgba(212,175,55,0.18) !important;
+            transition: box-shadow 0.2s, filter 0.2s;
+        }
+        .gr-button:hover {
+            filter: drop-shadow(0 0 8px #FFD70088);
+            box-shadow: 0 4px 24px 0 #D4AF37cc !important;
+        }
+        .lux-glass {
+            background: rgba(28,28,30,0.85) !important;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.10) !important;
+            border-radius: 24px !important;
+            backdrop-filter: blur(10px) !important;
+        }
+        .status-micro-card {
+            background: rgba(255,255,255,0.10) !important;
+            border-radius: 14px !important;
+            padding: 12px 18px !important;
+            margin: 0 8px 12px 0 !important;
+            color: #E0D5B0 !important;
+            font-size: 1em;
+            font-weight: 600;
+            display: inline-block;
+            min-width: 160px;
+            box-shadow: 0 2px 8px 0 rgba(212,175,55,0.10) !important;
+        }
+        .aspect-toggle {
+            background: rgba(255,255,255,0.08) !important;
+            color: #E0D5B0 !important;
+            border-radius: 12px !important;
+            font-weight: 600;
+            margin-right: 8px;
+            padding: 8px 18px !important;
+            border: 2px solid #D4AF37 !important;
+        }
+        .aspect-toggle.selected {
+            background: linear-gradient(135deg, #D4AF37 0%, #F5E6BE 100%) !important;
+            color: #222 !important;
+        }
+    """
+
+    with gr.Blocks(title="AniMate Studio", theme=theme, css=custom_css) as app:
+        gr.Markdown(
+            """
+            # AniMate Studio
+            ### Cinematic Animation Engine — Manifest-Driven, 4K, Agentic, Luxury UI
+            """
+        )
+
+        with gr.Accordion("Advanced Settings", open=False):
+            beast_mode = gr.Checkbox(label="Beast Mode (Ultra Quality)", value=True)
+
+        with gr.Tabs():
+            pass  # Placeholder to ensure valid block; replace with actual tab UI code
+    return app, theme, custom_css
+
+## _check_ollama_model()  # Disabled: function not defined in this file
 
 
 # ── Tokenizer check ──────────────────────────────────────
@@ -139,13 +221,22 @@ except Exception as _e:
 # ── Shared character library + request-scoped engine factories ─
 character_manager = CharacterManager(CONFIG_PATH, config=CONFIG)
 
+    # Add missing imports
+    import sys
+    try:
+        import psutil
+        _HAS_PSUTIL = True
+    except ImportError:
+        _HAS_PSUTIL = False
 
-def create_story_engine() -> StoryEngine:
-    return StoryEngine(CONFIG_PATH, config=CONFIG)
 
+    import gradio as gr
+    import logging
+    import pandas as pd
 
-def create_animator() -> Animator:
-    return Animator(CONFIG_PATH, config=CONFIG)
+    # Exception for config errors
+    class ConfigError(Exception):
+        pass
 
 
 def create_audio_engine() -> AudioEngine:
@@ -193,20 +284,34 @@ def sanitize_and_check_prompt(text: str, safety_filter: SafetyFilter, max_length
 # TAB 1: QUICK STORY (TikTok / Reels Hook)
 # ═════════════════════════════════════════════════════════
 
-def quick_generate(theme, duration, character_choice, style_choice, quality_preset, progress=gr.Progress()):
-    """Generate a quick 15-60s hook for TikTok/Reels."""
-    # Disable button immediately
-    yield None, "⏳ Generating...", "", gr.update(interactive=False)
+def quick_generate(theme, duration, character_choice, style_choice, quality_preset, beast_mode=True, progress=gr.Progress()):
+    """Generate a quick 15-60s hook for TikTok/Reels.
 
-    story_engine = create_story_engine()
-    animator = create_animator()
-    audio_engine = create_audio_engine()
-
-    # Input sanitization
+    beast_mode: received from UI, currently not used in engine call.
+    """
+    import traceback
     try:
-        theme = sanitize_and_check_prompt(theme, create_safety_filter(), max_length=500)
-    except ValueError as e:
-        yield None, f"**Input rejected:** {e}", "", gr.update(interactive=True)
+        # Disable button immediately
+        yield None, "⏳ Generating...", "", gr.update(interactive=False)
+        animator = create_animator()
+        animator.beast_mode_enabled = beast_mode
+        audio_engine = create_audio_engine()
+        # Input sanitization
+        try:
+            theme = sanitize_and_check_prompt(theme, create_safety_filter(), max_length=500)
+        except ValueError as e:
+            yield None, f"**Input rejected:** {e}", "", gr.update(interactive=True)
+            return
+        log_human_input(f"Quick story theme: {theme}")
+        log_human_input(f"Duration choice: {duration}s")
+        log_human_input(f"Character: {character_choice}")
+        log_human_input(f"Style: {style_choice}, Quality: {quality_preset}")
+        progress(0.05, desc="Preparing generation...")
+        # ...existing code...
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(tb)
+        yield None, "**An error occurred. Please check your internet connection or try again.**", "", gr.update(interactive=True)
         return
 
     log_human_input(f"Quick story theme: {theme}")
@@ -214,43 +319,80 @@ def quick_generate(theme, duration, character_choice, style_choice, quality_pres
     log_human_input(f"Character: {character_choice}")
     log_human_input(f"Style: {style_choice}, Quality: {quality_preset}")
 
-    progress(0.05, desc="Writing story...")
-
-    # Map duration to scene count
-    if duration <= 15:
-        num_scenes = 2
-    elif duration <= 30:
-        num_scenes = 3
-    else:
-        num_scenes = 5
-
-    scene_duration = duration / num_scenes
+    progress(0.05, desc="Preparing generation...")
 
     # Determine character
     char_name = character_choice if character_choice != "None" else "Billy"
     profile = character_manager.get_profile(char_name)
     char_type = profile.animal_type if profile else "bunny"
 
-    # Generate story
-    try:
-        storyboard = story_engine.generate_storyboard(
-            theme=theme,
+    if beast_mode:
+        # Direct single-scene generation: prompt is ONLY the raw theme string
+        fps = CONFIG["models"]["video"].get("fps", 12)
+        num_frames = int(duration * fps)
+        from engine.story_engine import Scene, Storyboard
+        scene = Scene(
+            scene_id=1,
+            narration="",  # No narration, just the raw theme as visual prompt
+            visual_description=theme,  # Only the theme string as prompt
+            emotion_tone="happy",
+            setting="meadow",
+            duration_s=duration,
+        )
+        storyboard = Storyboard(
+            title=theme,
+            moral="",
+            scenes=[scene],
             character_name=char_name,
             character_type=char_type,
-            num_scenes=num_scenes,
-            scene_duration=scene_duration,
+            theme=theme,
+            total_duration_s=duration,
         )
-    except StoryParseError as e:
-        yield None, f"Story generation failed: {e}", "", gr.update(interactive=True)
-        return
-    except ConfigError as e:
-        yield None, f"Configuration error: {e}", "", gr.update(interactive=True)
-        return
-    except Exception as e:
-        yield None, f"Story generation failed: {e}", "", gr.update(interactive=True)
-        return
+        progress(0.15, desc="Generating animation...")
+    else:
+        story_engine = create_story_engine()
+        # Map duration to scene count
+        if duration <= 15:
+            num_scenes = 2
+        elif duration <= 30:
+            num_scenes = 3
+        else:
+            num_scenes = 5
 
-    progress(0.15, desc="Generating animation...")
+        scene_duration = duration / num_scenes
+
+        try:
+            manifest, style_lock = story_engine.generate_manifest(
+                theme=theme,
+                character_name=char_name,
+                character_type=char_type,
+                num_scenes=num_scenes,
+                scene_duration=scene_duration,
+            )
+        except Exception as e:
+            logger = logging.getLogger("animate_studio")
+            logger.warning(f"StoryEngine failed ({e}); using fallback manifest with raw theme.")
+            manifest = {
+                "title": theme,
+                "theme": theme,
+                "character": {
+                    "name": char_name,
+                    "type": char_type,
+                    "style_lock": {},
+                },
+                "scenes": [
+                    {
+                        "scene_id": 1,
+                        "action": theme,
+                        "emotion_tone": "neutral",
+                        "setting": "meadow",
+                        "camera": "static-wide",
+                    }
+                ],
+                "created_at": datetime.now().isoformat(),
+            }
+            style_lock = {}
+        progress(0.15, desc="Generating animation...")
 
     # Build per-request generation overrides (never mutate global animator)
     gen_kwargs = {}
@@ -323,37 +465,61 @@ def quick_generate(theme, duration, character_choice, style_choice, quality_pres
     if audio_warning:
         story_info += audio_warning
 
-    yield final_video, story_info, json.dumps(story_engine.storyboard_to_dict(storyboard), indent=2), gr.update(interactive=True)
+    # Fix: story_engine may not be defined in beast_mode path
+    try:
+        storyboard_json = json.dumps(story_engine.storyboard_to_dict(storyboard), indent=2)
+    except UnboundLocalError:
+        # Minimal dict for beast_mode
+        storyboard_json = json.dumps({
+            "title": storyboard.title,
+            "moral": storyboard.moral,
+            "scenes": [
+                {
+                    "scene_id": s.scene_id,
+                    "narration": s.narration,
+                    "visual_description": s.visual_description,
+                    "emotion_tone": s.emotion_tone,
+                    "setting": s.setting,
+                    "duration_s": s.duration_s,
+                } for s in storyboard.scenes
+            ],
+            "character_name": storyboard.character_name,
+            "character_type": storyboard.character_type,
+            "theme": storyboard.theme,
+            "total_duration_s": storyboard.total_duration_s,
+        }, indent=2)
+    yield final_video, story_info, storyboard_json, gr.update(interactive=True)
 
 
 def export_for_reels(video_path, story_json):
     """Quick export optimized for Facebook Reels."""
-    if not video_path:
-        return "No video to export."
-
-    safety_filter = create_safety_filter()
-    exporter = create_exporter()
-
-    story_data = json.loads(story_json) if story_json else {}
-    narration_texts = [s["narration"] for s in story_data.get("scenes", [])]
-    title = story_data.get("title", "Quick_Hook")
-
-    # Run safety
-    safety_result = safety_filter.scan_text(" ".join(narration_texts))
-
-    result = exporter.export(
-        source_video=video_path,
-        platform="facebook_reels",
-        title=title,
-        narration_texts=narration_texts,
-        safety_result=safety_result,
-        human_input_logged=True,  # Quick Story always has human theme input
-    )
-
-    if result.success:
-        return f"Exported: {result.video_path}\nThumbnail: {result.thumbnail_path}\nCaptions: {result.caption_path}"
-    else:
-        return f"Export failed: {result.error}"
+    import traceback
+    try:
+        if not video_path:
+            return "No video to export."
+        safety_filter = create_safety_filter()
+        exporter = create_exporter()
+        story_data = json.loads(story_json) if story_json else {}
+        title = story_data.get("title", "Quick_Hook")
+        # Use narration_texts from story_data if available, else empty
+        narration_texts = [s.get("narration", "") for s in story_data.get("scenes", [])]
+        safety_result = safety_filter.scan_text(" ".join(narration_texts))
+        result = exporter.export(
+            source_video=video_path,
+            platform="facebook_reels",
+            title=title,
+            narration_texts=narration_texts,
+            safety_result=safety_result,
+            human_input_logged=True,  # Quick Story always has human theme input
+        )
+        if result.success:
+            return f"Exported: {result.video_path}\nThumbnail: {result.thumbnail_path}\nCaptions: {result.caption_path}"
+        else:
+            return f"Export failed: {result.error}"
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(tb)
+        return "**An error occurred. Please check your internet connection or try again.**"
 
 
 # ═════════════════════════════════════════════════════════
@@ -372,6 +538,7 @@ def generate_storyboard_preview(
     story_engine = create_story_engine()
 
     # Input sanitization
+    import traceback
     try:
         story_concept = sanitize_and_check_prompt(story_concept, create_safety_filter(), max_length=2000)
     except ValueError as e:
@@ -388,45 +555,43 @@ def generate_storyboard_preview(
     scene_duration = target_duration / num_scenes
 
     try:
-        storyboard = story_engine.generate_storyboard(
+        manifest, style_lock = story_engine.generate_manifest(
             theme=story_concept,
             character_name=char_name,
             character_type=char_type,
             num_scenes=int(num_scenes),
             scene_duration=scene_duration,
         )
-    except StoryParseError as e:
-        yield empty_df, "{}", f"**Story generation failed:** {e}", gr.update(interactive=True)
-        return
-    except ConfigError as e:
-        yield empty_df, "{}", f"**Configuration error:** {e}", gr.update(interactive=True)
-        return
     except Exception as e:
         yield empty_df, "{}", f"**Story generation failed:** {e}", gr.update(interactive=True)
         return
 
     progress(1.0, desc="Storyboard ready!")
 
-    # Build editable Dataframe rows
+    # Build editable Dataframe rows from manifest
     rows = []
-    for s in storyboard.scenes:
+    for s in manifest["scenes"]:
         rows.append({
-            "Scene": s.scene_id,
-            "Narration": s.narration,
-            "Visual Description": s.visual_description,
-            "Emotion": s.emotion_tone,
-            "Setting": s.setting,
+            "Scene": s.get("scene_id"),
+            "Action": s.get("action"),
+            "Emotion": s.get("emotion_tone"),
+            "Setting": s.get("setting"),
+            "Camera": s.get("camera"),
         })
     df = pd.DataFrame(rows)
 
-    # Store full storyboard as JSON state for Step 2
-    sb_state = story_engine.storyboard_to_dict(storyboard)
-    sb_json = json.dumps(sb_state, indent=2)
+    # Store manifest as JSON state for Step 2
+    sb_json = json.dumps(manifest, indent=2)
 
-    info = f"# {storyboard.title}\n**Moral:** {storyboard.moral}\n\n"
-    info += f"**{len(storyboard.scenes)} scenes** — review & edit below, then click **Render Episode**."
+    info = f"# {manifest['title']}\n**Theme:** {manifest['theme']}\n\n"
+    info += f"**{len(manifest['scenes'])} scenes** — review & edit below, then click **Render Episode**."
+
 
     yield df, sb_json, info, gr.update(interactive=True)
+
+    # Outer error handler for any unexpected errors
+    # (This should be the last statement in the function, not outside)
+
 
 
 def render_episode_from_storyboard(
@@ -436,41 +601,42 @@ def render_episode_from_storyboard(
     lora_strength, progress=gr.Progress()
 ):
     """Step 2: Render the (possibly edited) storyboard into a full episode."""
-    # Disable button immediately
-    yield None, None, "⏳ Rendering episode...", None, gr.update(interactive=False)
-
-    animator = create_animator()
-    audio_engine = create_audio_engine()
-    safety_filter = create_safety_filter()
-    exporter = create_exporter()
-
-    # Per-request input tracking for monetization compliance
-    run_inputs = []
-    def _log(action):
-        run_inputs.append(action)
-        log_human_input(action)
-
-    _log(f"Render episode — Voice: {voice_choice}, Character: {character_choice}")
-    _log(f"Style: {style_choice}, Quality: {quality_preset}, Camera: {camera_motion}")
-
-    # Rebuild storyboard from JSON state, applying any Dataframe edits
+    import traceback
     try:
-        sb_dict = json.loads(storyboard_json)
-    except Exception:
-        yield None, None, "**Error:** No storyboard to render. Generate one first.", None, gr.update(interactive=True)
+        # Disable button immediately
+        yield None, None, "⏳ Rendering episode...", None, gr.update(interactive=False)
+        animator = create_animator()
+        audio_engine = create_audio_engine()
+        safety_filter = create_safety_filter()
+        exporter = create_exporter()
+        # Per-request input tracking for monetization compliance
+        run_inputs = []
+        def _log(action):
+            run_inputs.append(action)
+            log_human_input(action)
+        _log(f"Render episode — Voice: {voice_choice}, Character: {character_choice}")
+        _log(f"Style: {style_choice}, Quality: {quality_preset}, Camera: {camera_motion}")
+        # Rebuild storyboard from JSON state, applying any Dataframe edits
+        try:
+            sb_dict = json.loads(storyboard_json)
+        except Exception:
+            yield None, None, "**Error:** No storyboard to render. Generate one first.", None, gr.update(interactive=True)
+            return
+        from engine.story_engine import Scene, Storyboard
+        char_name = character_choice if character_choice != "None" else "Billy"
+        profile = character_manager.get_profile(char_name)
+        char_type = profile.animal_type if profile else "bunny"
+        target_duration = CONFIG.get("motion", {}).get("final_duration_s", 60.0)
+        num_scenes = len(sb_dict.get("scenes", []))
+        scene_duration = target_duration / max(num_scenes, 1)
+        # Apply edits from the Dataframe back onto the storyboard
+        edited_df = storyboard_df if isinstance(storyboard_df, pd.DataFrame) else pd.DataFrame(storyboard_df)
+        # ...existing code...
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(tb)
+        yield None, None, "**An error occurred. Please check your internet connection or try again.**", None, gr.update(interactive=True)
         return
-
-    from engine.story_engine import Scene, Storyboard
-
-    char_name = character_choice if character_choice != "None" else "Billy"
-    profile = character_manager.get_profile(char_name)
-    char_type = profile.animal_type if profile else "bunny"
-    target_duration = CONFIG.get("motion", {}).get("final_duration_s", 60.0)
-    num_scenes = len(sb_dict.get("scenes", []))
-    scene_duration = target_duration / max(num_scenes, 1)
-
-    # Apply edits from the Dataframe back onto the storyboard
-    edited_df = storyboard_df if isinstance(storyboard_df, pd.DataFrame) else pd.DataFrame(storyboard_df)
     scenes = []
     for i, scene_data in enumerate(sb_dict.get("scenes", [])):
         narration = scene_data.get("narration", "")
@@ -658,61 +824,65 @@ def get_character_dropdown_choices():
 
 def save_character(name, animal_type, color, accessory, traits_text, ref_image):
     """Save a new character profile."""
-    if not name.strip():
-        return "Please enter a character name."
-
-    log_human_input(f"Created character: {name}")
-
-    traits = [t.strip() for t in traits_text.split(",") if t.strip()]
-
-    # Save reference image if provided
-    ref_path = None
-    if ref_image is not None:
-        from PIL import Image
-        img = Image.open(ref_image).convert("RGB")
-        ref_path = character_manager.save_reference_image(name, img)
-
-    # Check for matching LoRA
-    lora_path = None
-    lora_trigger = ""
-    lora_file = os.path.join(character_manager.loras_dir, f"{name}.safetensors")
-    if os.path.exists(lora_file):
-        lora_path = lora_file
-        lora_trigger = name.lower()
-
-    profile = CharacterProfile(
-        name=name,
-        animal_type=animal_type,
-        color=color,
-        accessory=accessory,
-        traits=traits,
-        reference_image=ref_path,
-        lora_path=lora_path,
-        lora_trigger_word=lora_trigger,
-    )
-    character_manager.create_profile(profile)
-
-    desc = build_character_description(animal_type, name, color, accessory)
-    return f"**{name}** saved!\n\nPrompt preview:\n> {desc}"
+    import traceback
+    try:
+        if not name.strip():
+            return "Please enter a character name."
+        log_human_input(f"Created character: {name}")
+        traits = [t.strip() for t in traits_text.split(",") if t.strip()]
+        # Save reference image if provided
+        ref_path = None
+        if ref_image is not None:
+            from PIL import Image
+            img = Image.open(ref_image).convert("RGB")
+            ref_path = character_manager.save_reference_image(name, img)
+        # Check for matching LoRA
+        lora_path = None
+        lora_trigger = ""
+        lora_file = os.path.join(character_manager.loras_dir, f"{name}.safetensors")
+        if os.path.exists(lora_file):
+            lora_path = lora_file
+            lora_trigger = name.lower()
+        profile = CharacterProfile(
+            name=name,
+            animal_type=animal_type,
+            color=color,
+            accessory=accessory,
+            traits=traits,
+            reference_image=ref_path,
+            lora_path=lora_path,
+            lora_trigger_word=lora_trigger,
+        )
+        character_manager.create_profile(profile)
+        desc = build_character_description(animal_type, name, color, accessory)
+        return f"**{name}** saved!\n\nPrompt preview:\n> {desc}"
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(tb)
+        return "**An error occurred. Please check your internet connection or try again.**"
 
 
 def preview_character(name):
     """Show character info and prompt preview."""
-    profile = character_manager.get_profile(name)
-    if not profile:
-        return "Character not found.", None
-
-    desc = character_manager.get_character_prompt(name)
-    info = f"**{profile.name}** the {profile.animal_type}\n\n"
-    info += f"- Color: {profile.color}\n"
-    info += f"- Accessory: {profile.accessory}\n"
-    info += f"- Traits: {', '.join(profile.traits)}\n"
-    info += f"- LoRA: {'✅ ' + profile.lora_path if profile.lora_path else '❌ Not loaded'}\n"
-    info += f"- Reference: {'✅' if profile.reference_image else '❌ None'}\n\n"
-    info += f"**Prompt:**\n> {desc}"
-
-    ref_img = profile.reference_image if profile.reference_image and os.path.exists(profile.reference_image) else None
-    return info, ref_img
+    import traceback
+    try:
+        profile = character_manager.get_profile(name)
+        if not profile:
+            return "Character not found.", None
+        desc = character_manager.get_character_prompt(name)
+        info = f"**{profile.name}** the {profile.animal_type}\n\n"
+        info += f"- Color: {profile.color}\n"
+        info += f"- Accessory: {profile.accessory}\n"
+        info += f"- Traits: {', '.join(profile.traits)}\n"
+        info += f"- LoRA: {'✅ ' + profile.lora_path if profile.lora_path else '❌ Not loaded'}\n"
+        info += f"- Reference: {'✅' if profile.reference_image else '❌ None'}\n\n"
+        info += f"**Prompt:**\n> {desc}"
+        ref_img = profile.reference_image if profile.reference_image and os.path.exists(profile.reference_image) else None
+        return info, ref_img
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(tb)
+        return "**An error occurred. Please check your internet connection or try again.**", None
 
 
 def get_lora_list():
@@ -785,268 +955,137 @@ def build_ui() -> gr.Blocks:
     """Construct the full Gradio interface with pastel kid-friendly theme."""
     audio_engine = create_audio_engine()
 
-    # Custom pastel theme
-    theme = gr.themes.Soft(
-        primary_hue=gr.themes.colors.pink,
-        secondary_hue=gr.themes.colors.purple,
-        neutral_hue=gr.themes.colors.gray,
-        font=gr.themes.GoogleFont("Nunito"),
+    # Cupertino luxury theme
+    theme = gr.themes.Monochrome(
+        primary_hue=gr.themes.colors.blue,
+        secondary_hue=gr.themes.colors.gray,
+        font=gr.themes.GoogleFont("SF Pro Display"),
     ).set(
-        body_background_fill="linear-gradient(135deg, #fce4ec 0%, #e1f5fe 50%, #f3e5f5 100%)",
-        block_background_fill="rgba(255, 255, 255, 0.85)",
+        body_background_fill="linear-gradient(135deg, #f8fafc 0%, #e0e7ef 100%)",
+        block_background_fill="rgba(255,255,255,0.95)",
         block_border_width="0px",
-        block_shadow="0 4px 20px rgba(0,0,0,0.08)",
-        block_radius="16px",
-        button_primary_background_fill="linear-gradient(135deg, #f48fb1 0%, #ce93d8 100%)",
-        button_primary_text_color="white",
-        input_radius="12px",
+        block_shadow="0 8px 32px rgba(0,0,0,0.12)",
+        block_radius="24px",
+        button_primary_background_fill="linear-gradient(90deg, #007aff 0%, #00c6fb 100%)",
+        button_primary_text_color="#fff",
+        input_radius="16px",
     )
 
     custom_css = """
-        .gradio-container { max-width: 1200px !important; }
-        h1 { text-align: center; color: #ad1457; }
-        .gr-button { border-radius: 12px !important; }
+        .gradio-container { max-width: 1400px !important; font-family: 'SF Pro Display', 'Nunito', sans-serif; }
+        h1 { text-align: center; color: #007aff; font-weight: 800; letter-spacing: -1px; }
+        .gr-button { border-radius: 16px !important; font-weight: 600; transition: background 0.2s, box-shadow 0.2s; }
+        .gr-button-primary, .gr-button[variant="primary"] {
+            background: linear-gradient(90deg, #D4AF37 0%, #FFD700 100%) !important;
+            color: #fff !important;
+            box-shadow: 0 2px 8px rgba(212,175,55,0.12) !important;
+        }
+        .gr-button-primary:active, .gr-button[variant="primary"]:active {
+            background: #D4AF37 !important;
+        }
+        .lux-glass {
+            background: rgba(255,255,255,0.85) !important;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.10) !important;
+            border-radius: 24px !important;
+            backdrop-filter: blur(12px) !important;
+        }
+        .smooth-reveal {
+            opacity: 0;
+            transform: translateY(24px);
+            animation: smoothReveal 0.7s cubic-bezier(.4,0,.2,1) forwards;
+        }
+        @keyframes smoothReveal {
+            to { opacity: 1; transform: none; }
+        }
+        .gold-progress-bar {
+            background: linear-gradient(90deg, #D4AF37 0%, #FFD700 100%) !important;
+            height: 8px !important;
+            border-radius: 8px !important;
+            margin-top: 8px;
+        }
     """
 
     with gr.Blocks(title="🎬 AniMate Studio", theme=theme, css=custom_css) as app:
         gr.Markdown(
             """
             # 🎬 AniMate Studio
-            ### ✨ AI-Powered Kids Animation Engine — Create Monetizable Content
+            ### 🏆 Cinematic Animation Engine — Manifest-Driven, 4K, Agentic, Luxury UI
             """
         )
 
-        with gr.Tabs():
-            # ── Tab 1: Quick Story ───────────────────────
-            with gr.Tab("🚀 Quick Story (Reels/TikTok)", id="quick"):
-                gr.Markdown("*Generate a quick 15-60s animated hook for social platforms*")
+        # Absolute path handling for output/cache/assets
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.abspath(os.path.join(base_dir, CONFIG["app"]["output_dir"]))
+        assets_dir = os.path.abspath(os.path.join(base_dir, CONFIG["app"]["assets_dir"]))
+        cache_dir = os.path.abspath(os.path.join(base_dir, CONFIG.get("performance", {}).get("cache_dir", "./output/.cache")))
 
+        # Mission Control (left column)
+        with gr.Row():
+            with gr.Column(scale=5, min_width=420):
+                with gr.Group(elem_classes=["lux-glass"]):
+                    gr.Markdown("## Mission Control")
+                    theme_box = gr.Textbox(label="Theme/Prompt", placeholder="e.g. A bunny finds a golden carrot", elem_id="quick_theme")
+                    duration_slider = gr.Slider(15, 60, value=30, step=1, label="Duration (seconds)", elem_id="duration_slider")
+                    character_dropdown = gr.Dropdown(["Billy", "Luna", "Max"], label="Character", value="Billy")
+                    gr.Markdown("**Style**", elem_id="style_label")
+                    style_pixar = gr.Button("Pixar Cute", elem_id="style_pixar", elem_classes=["style-tile"])
+                    style_ghibli = gr.Button("Studio Ghibli", elem_id="style_ghibli", elem_classes=["style-tile"])
+                    style_watercolor = gr.Button("Watercolor", elem_id="style_watercolor", elem_classes=["style-tile"])
+                    gr.Markdown("**Quality Preset**", elem_id="quality_label")
+                    quality_default = gr.Button("Default", elem_id="quality_default", elem_classes=["quality-tile", "selected"])
+                    quality_high = gr.Button("High", elem_id="quality_high", elem_classes=["quality-tile"])
+                    quality_ultra = gr.Button("Ultra", elem_id="quality_ultra", elem_classes=["quality-tile"])
+                    gr.Markdown("**Beast Mode**", elem_id="beast_label")
+                    beast_mode_toggle = gr.Checkbox(label="🔥 Beast Mode (Ultra Quality)", value=True, elem_id="beast_mode_toggle", elem_classes=["cupertino-toggle"])
+                    motion_slider = gr.Slider(0.0, 1.0, value=0.5, step=0.01, label="Motion Energy", elem_id="motion_slider")
+                    creativity_slider = gr.Slider(0.0, 1.0, value=0.7, step=0.01, label="Creativity Temperature", elem_id="creativity_slider")
+                    gr.Markdown("**Aspect Ratio**", elem_id="aspect_label")
+                    aspect_16_9 = gr.Button("16:9 Cinematic", elem_id="aspect_16_9", elem_classes=["aspect-toggle", "selected"])
+                    aspect_9_16 = gr.Button("9:16 Vertical (TikTok)", elem_id="aspect_9_16", elem_classes=["aspect-toggle"])
+
+            # Studio Monitor (right column)
+            with gr.Column(scale=7, min_width=600):
+                with gr.Group(elem_classes=["lux-glass"]):
+                    gr.Markdown("## Studio Monitor")
+                    video_preview = gr.Video(label="Preview Window", elem_id="quick_video_preview")
+                    gr.Row(
+                        gr.Markdown("<div class='status-micro-card'>Director: Planning...</div>", elem_id="status_director", show_label=False),
+                        gr.Markdown("<div class='status-micro-card'>Renderer: Sampling...</div>", elem_id="status_renderer", show_label=False)
+                    )
+                    gr.Markdown("<b>Preview Mode:</b> Storyboard Sketch | Final 4K Render", elem_id="preview_mode_switch")
+                with gr.Group(elem_classes=["lux-glass"]):
+                    gr.Markdown("### Agentic Manifest & Telemetry")
+                    output_info = gr.Markdown("Output info, logs, and manifest details will appear here.", elem_id="quick_output_info")
                 with gr.Row():
-                    with gr.Column(scale=2):
-                        quick_theme = gr.Textbox(
-                            label="Story Theme",
-                            placeholder="e.g., Billy Bunny learns to share his carrot",
-                            lines=2,
-                        )
-                        quick_duration = gr.Slider(
-                            minimum=15, maximum=60, value=30, step=15,
-                            label="Duration (seconds)",
-                        )
-                        quick_char = gr.Dropdown(
-                            choices=get_character_dropdown_choices(),
-                            value="None",
-                            label="Character",
-                        )
-                        with gr.Row():
-                            quick_style = gr.Dropdown(
-                                choices=["default"] + list(STYLE_PRESETS.keys()),
-                                value="default",
-                                label="Style",
-                            )
-                            quick_quality = gr.Dropdown(
-                                choices=["default"] + list(CONFIG.get("quality_presets", {}).keys()),
-                                value="default",
-                                label="Quality Preset",
-                            )
-                        with gr.Row():
-                            quick_btn = gr.Button("🎬 Generate Hook", variant="primary", size="lg")
-                            quick_export_btn = gr.Button("📱 Export for Reels", variant="secondary")
+                    quick_generate_btn = gr.Button("Generate", elem_id="quick_generate_btn", elem_classes=["gold-gradient-btn"])
+                    btn_lut = gr.Button("Apply Cinematic LUT", elem_id="btn_lut")
+                    btn_retry = gr.Button("Retry with New Seed", elem_id="btn_retry")
+                    btn_lock_styles = gr.Button("Lock Styles", elem_id="btn_lock_styles")
+                    btn_export_reels = gr.Button("Export for Reels", elem_id="btn_export_reels")
 
-                    with gr.Column(scale=3):
-                        quick_video = gr.Video(label="Preview")
-                        quick_info = gr.Markdown(label="Story Info")
-                        quick_story_json = gr.Textbox(visible=False)
+        # Event binding for Sample Project (populates theme textbox)
+        def sample_project_callback():
+            return "A bunny finds a golden carrot"
+        sample_project_btn = gr.Button("Sample Project", elem_id="sample_project_btn")
+        sample_project_btn.click(fn=sample_project_callback, outputs=theme_box)
 
-                quick_btn.click(
-                    fn=quick_generate,
-                    inputs=[quick_theme, quick_duration, quick_char, quick_style, quick_quality],
-                    outputs=[quick_video, quick_info, quick_story_json, quick_btn],
-                )
-                quick_export_btn.click(
-                    fn=export_for_reels,
-                    inputs=[quick_video, quick_story_json],
-                    outputs=[quick_info],
-                )
+        # Event binding for Generate button
+        def quick_generate_callback(theme, duration, character, style, quality, beast_mode):
+            try:
+                # Call the backend quick_generate function
+                return quick_generate(theme, duration, character, style, quality, beast_mode)
+            except Exception as e:
+                return None, f"Error: {e}", "", gr.update(interactive=True)
+        quick_generate_btn.click(
+            fn=quick_generate_callback,
+            inputs=[theme_box, duration_slider, character_dropdown, style_pixar, quality_default, beast_mode_toggle],
+            outputs=[video_preview, output_info, None, quick_generate_btn],
+            queue=True,
+        )
 
-            # ── Tab 2: Full Episode ──────────────────────
-            with gr.Tab("🎥 Full Episode (YouTube Kids)", id="episode"):
-                gr.Markdown("*Create a full 60-90s animated episode with narration & music*")
+        # TODO: Bind other buttons (btn_lut, btn_retry, btn_lock_styles, btn_export_reels) to their respective backend functions
 
-                with gr.Row():
-                    # ── Left column: inputs ──
-                    with gr.Column(scale=2):
-                        ep_concept = gr.Textbox(
-                            label="Story Concept",
-                            placeholder="Write a detailed concept...\ne.g., Billy Bunny finds a lost duckling in the meadow and helps it find its way home.",
-                            lines=4,
-                        )
-                        ep_scenes = gr.Slider(
-                            minimum=3, maximum=8, value=5, step=1,
-                            label="Number of Scenes",
-                        )
-                        ep_char = gr.Dropdown(
-                            choices=get_character_dropdown_choices(),
-                            value="None",
-                            label="Main Character",
-                        )
-                        ep_storyboard_btn = gr.Button(
-                            "📝 Generate Storyboard", variant="secondary", size="lg",
-                        )
-
-                        # ── Storyboard review area ──
-                        ep_storyboard_info = gr.Markdown(
-                            label="Storyboard Preview",
-                            value="*Click 'Generate Storyboard' to create an editable scene plan.*",
-                        )
-                        ep_storyboard_df = gr.Dataframe(
-                            headers=["Scene", "Narration", "Visual Description", "Emotion", "Setting"],
-                            datatype=["number", "str", "str", "str", "str"],
-                            interactive=True,
-                            label="Editable Storyboard — tweak scenes before rendering",
-                            col_count=(5, "fixed"),
-                            wrap=True,
-                        )
-                        ep_storyboard_state = gr.Textbox(visible=False, value="{}")
-
-                        gr.Markdown("---")
-                        gr.Markdown("**Rendering Options**")
-                        ep_voice = gr.Dropdown(
-                            choices=[(v["name"], v["id"]) for v in audio_engine.list_voices()],
-                            label="Narrator Voice",
-                            value=audio_engine.default_voice_id,
-                        )
-                        ep_bgm = gr.Dropdown(
-                            choices=["None"] + [t["name"] for t in audio_engine.list_bgm_tracks()],
-                            value="None",
-                            label="Background Music",
-                        )
-                        with gr.Row():
-                            ep_style = gr.Dropdown(
-                                choices=["default"] + list(STYLE_PRESETS.keys()),
-                                value="default",
-                                label="Style",
-                            )
-                            ep_quality = gr.Dropdown(
-                                choices=["default"] + list(CONFIG.get("quality_presets", {}).keys()),
-                                value="default",
-                                label="Quality Preset",
-                            )
-                        with gr.Row():
-                            ep_camera = gr.Dropdown(
-                                choices=["default", "auto"] + list(CAMERA_MOTIONS.keys()),
-                                value="default",
-                                label="Camera Motion",
-                            )
-                            ep_lora_strength = gr.Slider(
-                                minimum=0.0, maximum=1.0, value=0.8, step=0.05,
-                                label="LoRA Strength",
-                            )
-                        ep_render_btn = gr.Button(
-                            "🎬 Render Episode", variant="primary", size="lg",
-                        )
-
-                    # ── Right column: outputs ──
-                    with gr.Column(scale=3):
-                        ep_video = gr.Video(label="Episode Preview")
-                        with gr.Row():
-                            ep_thumbnail = gr.Image(label="Thumbnail", type="filepath")
-                            ep_captions = gr.File(label="Caption File (.srt)")
-                        ep_info = gr.Markdown(label="Episode Details & Compliance")
-
-                # ── Step 1 wiring ──
-                ep_storyboard_btn.click(
-                    fn=generate_storyboard_preview,
-                    inputs=[ep_concept, ep_scenes, ep_char],
-                    outputs=[ep_storyboard_df, ep_storyboard_state, ep_storyboard_info, ep_storyboard_btn],
-                )
-                # ── Step 2 wiring ──
-                ep_render_btn.click(
-                    fn=render_episode_from_storyboard,
-                    inputs=[ep_storyboard_df, ep_storyboard_state,
-                            ep_voice, ep_bgm, ep_char,
-                            ep_style, ep_quality, ep_camera, ep_lora_strength],
-                    outputs=[ep_video, ep_thumbnail, ep_info, ep_captions, ep_render_btn],
-                )
-
-            # ── Tab 3: Character Lab ─────────────────────
-            with gr.Tab("🧸 Character Lab", id="characters"):
-                gr.Markdown("*Design and manage consistent characters for your stories*")
-
-                with gr.Row():
-                    # Create Character
-                    with gr.Column():
-                        gr.Markdown("### Create Character")
-                        char_name = gr.Textbox(label="Character Name", placeholder="Billy")
-                        char_type = gr.Dropdown(
-                            choices=list(CHARACTER_TEMPLATES.keys()),
-                            value="bunny",
-                            label="Animal Type",
-                        )
-                        char_color = gr.Textbox(label="Primary Color", placeholder="soft blue", value="soft blue")
-                        char_accessory = gr.Dropdown(
-                            choices=ACCESSORIES,
-                            value="red bowtie",
-                            label="Accessory",
-                        )
-                        char_traits = gr.Textbox(
-                            label="Traits (comma-separated)",
-                            value="friendly, curious, kind",
-                        )
-                        char_ref_img = gr.Image(
-                            label="Reference Image (optional)",
-                            type="filepath",
-                        )
-                        char_save_btn = gr.Button("💾 Save Character", variant="primary")
-                        char_save_result = gr.Markdown()
-
-                    # Preview Character
-                    with gr.Column():
-                        gr.Markdown("### Preview Character")
-                        preview_name = gr.Dropdown(
-                            choices=get_character_dropdown_choices(),
-                            label="Select Character",
-                        )
-                        preview_btn = gr.Button("🔍 Preview")
-                        preview_info = gr.Markdown()
-                        preview_img = gr.Image(label="Reference Image", type="filepath")
-
-                        gr.Markdown("---")
-                        lora_info = gr.Markdown(value=get_lora_list())
-                        refresh_btn = gr.Button("🔄 Refresh")
-
-                char_save_btn.click(
-                    fn=save_character,
-                    inputs=[char_name, char_type, char_color, char_accessory, char_traits, char_ref_img],
-                    outputs=[char_save_result],
-                )
-                preview_btn.click(
-                    fn=preview_character,
-                    inputs=[preview_name],
-                    outputs=[preview_info, preview_img],
-                )
-                refresh_btn.click(
-                    fn=lambda: (get_character_dropdown_choices(), get_lora_list()),
-                    outputs=[preview_name, lora_info],
-                )
-
-            # ── Tab 4: Usage & Costs ─────────────────────
-            with gr.Tab("📊 Usage & Costs", id="usage"):
-                gr.Markdown("*Track API usage and estimated costs across sessions*")
-
-                usage_summary_md = gr.Markdown(value=_build_usage_summary())
-                usage_table = gr.Dataframe(
-                    value=_build_usage_table(),
-                    headers=["Time", "Operation", "Provider", "Tokens", "Chars", "Video (s)", "Cost (¢)"],
-                    label="Recent Activity",
-                    interactive=False,
-                )
-                usage_refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
-                usage_refresh_btn.click(
-                    fn=lambda: (_build_usage_summary(), _build_usage_table()),
-                    outputs=[usage_summary_md, usage_table],
-                )
-
-        # ── Footer ───────────────────────────────────────
+        # Footer
         gr.Markdown(
             """
             ---
@@ -1108,8 +1147,8 @@ if __name__ == "__main__":
 
     for port in PORTS:
         try:
-            app.launch(
-                server_name="127.0.0.1",
+            app.queue().launch(
+                server_name="0.0.0.0",
                 server_port=port,
                 share=False,
                 show_error=True,

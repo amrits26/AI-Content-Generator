@@ -27,6 +27,25 @@ _DEFAULT_RATES: dict[str, float] = {
 class UsageTracker:
     """Lightweight SQLite usage logger.  Thread-safe via short-lived connections."""
 
+    # ------------------------------------------------------------------
+    # Performance Profiling & Predictive Logging (AIOps)
+    # ------------------------------------------------------------------
+
+    def log_latency(self, phase: str, duration_s: float, threshold_s: float = 5.0, metadata: dict | None = None):
+        """Log latency for a generation phase. Warn if above threshold."""
+        self._insert(
+            f"latency_{phase}",
+            duration_s=duration_s,
+            metadata=metadata,
+        )
+        if duration_s > threshold_s:
+            logger.warning(f"Latency Warning: {phase} phase took {duration_s:.2f}s (>{threshold_s}s)")
+            self._insert(
+                f"latency_warning_{phase}",
+                duration_s=duration_s,
+                metadata={"warning": True, **(metadata or {})},
+            )
+
     def __init__(self, db_path: str = "output/usage.db", config: Optional[dict[str, Any]] = None):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,6 +64,12 @@ class UsageTracker:
         conn = sqlite3.connect(str(self.db_path), timeout=5)
         conn.row_factory = sqlite3.Row
         try:
+            # Enable WAL mode idempotently
+            try:
+                wal_status = conn.execute("PRAGMA journal_mode=WAL;").fetchone()
+                logger.info(f"SQLite WAL mode enabled: {wal_status[0]}")
+            except Exception as e:
+                logger.warning(f"Failed to enable WAL mode: {e}")
             yield conn
             conn.commit()
         finally:
@@ -76,25 +101,29 @@ class UsageTracker:
     def _insert(self, operation: str, *, provider: str = "", tokens: int = 0,
                 characters: int = 0, duration_s: float = 0.0,
                 cost_cents: float = 0.0, metadata: dict | None = None):
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO usage
-                   (timestamp, session_id, operation, provider,
-                    tokens_used, characters_generated, video_duration_seconds,
-                    estimated_cost_cents, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    datetime.now(timezone.utc).isoformat(),
-                    _SESSION_ID,
-                    operation,
-                    provider,
-                    tokens or None,
-                    characters or None,
-                    duration_s or None,
-                    round(cost_cents, 2),
-                    json.dumps(metadata) if metadata else None,
-                ),
-            )
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO usage
+                       (timestamp, session_id, operation, provider,
+                        tokens_used, characters_generated, video_duration_seconds,
+                        estimated_cost_cents, metadata)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        datetime.now(timezone.utc).isoformat(),
+                        _SESSION_ID,
+                        operation,
+                        provider,
+                        tokens or None,
+                        characters or None,
+                        duration_s or None,
+                        round(cost_cents, 2),
+                        json.dumps(metadata) if metadata else None,
+                    ),
+                )
+            logger.info(f"Usage logged | op: {operation} | provider: {provider} | tokens: {tokens} | chars: {characters} | duration: {duration_s} | cost: {cost_cents}")
+        except Exception as e:
+            logger.error(f"Usage logging failed | op: {operation} | error: {e}")
 
     # ------------------------------------------------------------------
     # Public API

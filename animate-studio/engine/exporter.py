@@ -73,9 +73,10 @@ class Exporter:
         self.ai_disclosure = self.compliance_cfg["ai_disclosure_text"]
 
         # Upscaling & color grading settings
-        self.upscale_enabled = self.export_presets.get("upscale", False)
-        self.upscale_factor = self.export_presets.get("upscale_factor", 2)
-        self.upscaler_model = self.export_presets.get("upscaler_model", "realesrgan-x4plus-anime")
+        # Always enable 4K upscaling (Resolution Mastery)
+        self.upscale_enabled = True
+        self.upscale_factor = 4
+        self.upscaler_model = self.export_presets.get("upscaler_model", "realesrgan-x4plus")
         self.color_grading = self.export_presets.get("color_grading", {})
         self.burn_captions = self.export_presets.get("burn_captions", False)
 
@@ -93,6 +94,8 @@ class Exporter:
         human_input_logged: bool = True,
         audio_royalty_free: bool = True,
         hashtags: Optional[list[str]] = None,
+        tiktok_mode: bool = False,
+        burn_captions: bool = False,
     ) -> ExportResult:
         """
         Full export pipeline for a single platform:
@@ -159,25 +162,33 @@ class Exporter:
                 target_height=preset["height"],
             )
 
-            # ── Step 4b: AI Upscale (if enabled) ─────────
+            # ── Step 4b: AI Upscale (always enabled, 4K) ─────────
             upscale_input = cropped_path
-            if self.upscale_enabled:
-                upscaled_path = os.path.join(export_dir, "_upscaled.mp4")
-                try:
-                    if self._upscaler is None:
-                        self._upscaler = Upscaler(
-                            model_name=self.upscaler_model,
-                            scale=self.upscale_factor,
-                        )
-                    self._upscaler.upscale_video_ffmpeg(
-                        cropped_path, upscaled_path,
-                        target_width=preset["width"],
-                        target_height=preset["height"],
+            upscaled_path = os.path.join(export_dir, "_upscaled_4k.mp4")
+            try:
+                if self._upscaler is None:
+                    self._upscaler = Upscaler(
+                        model_name=self.upscaler_model,
+                        scale=4,
                     )
+                # Target 4K resolution (3840x2160)
+                self._upscaler.upscale_video_ffmpeg(
+                    cropped_path, upscaled_path,
+                    target_width=3840,
+                    target_height=2160,
+                )
+                upscale_input = upscaled_path
+                logger.info("Upscaled to 4K (3840x2160)")
+            except Exception as e:
+                logger.warning("4K Upscale failed, using cropped: %s", e)
+                # Fallback: try Real-ESRGAN if available
+                try:
+                    from utils.upscaler import realesrgan_upscale_video
+                    realesrgan_upscale_video(cropped_path, upscaled_path, 4)
                     upscale_input = upscaled_path
-                    logger.info("Upscaled to %dx%d", preset["width"], preset["height"])
-                except Exception as e:
-                    logger.warning("Upscale failed, using cropped: %s", e)
+                    logger.info("Fallback Real-ESRGAN 4x upscaling succeeded.")
+                except Exception as e2:
+                    logger.warning("Fallback Real-ESRGAN upscaling failed: %s", e2)
 
             # ── Step 4c: Color grading (FFmpeg filter) ───
             grading_input = upscale_input
@@ -221,51 +232,121 @@ class Exporter:
                 pixel_format=preset["pixel_format"],
             )
 
-            # Clean up intermediate files
-            for tmp in [cropped_path, upscale_input, grading_input]:
-                if tmp != final_video_path and os.path.exists(tmp):
-                    try:
-                        os.remove(tmp)
-                    except OSError:
-                        pass
+            # TikTok/Shorts mode: output 9:16 vertical 4K video
+            vertical_video_path = None
+            if tiktok_mode or platform == "tiktok":
+                try:
+                    from utils.ffmpeg_utils import vertical_center_crop_with_padding
+                    vertical_video_path = os.path.join(export_dir, f"{safe_title}_vertical_4k.mp4")
+                    vertical_center_crop_with_padding(
+                        final_video_path, vertical_video_path,
+                        target_width=2160, target_height=3840
+                    )
+                    logger.info(f"Vertical 4K video created: {vertical_video_path}")
+                except Exception as e:
+                    logger.warning(f"Vertical 4K export failed: {e}")
 
-            final_duration = get_media_duration(final_video_path)
+            # Burnt-in captions (Cupertino style)
+            if burn_captions or self.burn_captions:
+                try:
+                    from utils.ffmpeg_utils import burn_captions_cupertino
+                    burnt_path = os.path.join(export_dir, f"{safe_title}_burnt.mp4")
+                    burn_captions_cupertino(
+                        final_video_path, caption_path, burnt_path
+                    )
+                    final_video_path = burnt_path
+                    logger.info(f"Burnt-in captions applied: {burnt_path}")
+                except Exception as e:
+                    logger.warning(f"Burnt-in captions failed: {e}")
 
-            # ── Step 6: Generate captions (.srt) ─────────
-            caption_path = os.path.join(export_dir, f"{safe_title}.srt")
-            self._generate_srt(narration_texts, final_duration, caption_path)
+                # Clean up intermediate files
+                for tmp in [cropped_path, upscale_input, grading_input]:
+                    if tmp != final_video_path and os.path.exists(tmp):
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
 
-            # ── Step 7: Metadata with AI disclosure ──────
-            metadata_path = os.path.join(export_dir, f"{safe_title}_metadata.json")
-            metadata = self._generate_metadata(
-                title=title,
-                platform=platform,
-                duration_s=final_duration,
-                resolution=f"{preset['width']}x{preset['height']}",
-                hashtags=hashtags or self._default_hashtags(platform),
-                narration_texts=narration_texts,
-                compliance=compliance,
-            )
-            with open(metadata_path, "w", encoding="utf-8") as f:
-                json.dump(metadata, f, indent=2, ensure_ascii=False)
+                final_duration = get_media_duration(final_video_path)
 
-            logger.info(
-                "Export complete: %s [%s] %.1fs %dx%d",
-                final_video_path, platform, final_duration,
-                preset["width"], preset["height"],
-            )
+                # Intelligent Cold Storage: Move raw 512p scene clips to .cache or zip
+                try:
+                    raw_scene_dir = os.path.join(self.output_dir, "_raw_scenes")
+                    if os.path.exists(raw_scene_dir):
+                        import zipfile
+                        cache_dir = os.path.join(self.output_dir, ".cache")
+                        os.makedirs(cache_dir, exist_ok=True)
+                        zip_path = os.path.join(cache_dir, f"{safe_title}_{platform}_{timestamp}_rawscenes.zip")
+                        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+                            for root, _, files in os.walk(raw_scene_dir):
+                                for file in files:
+                                    file_path = os.path.join(root, file)
+                                    arcname = os.path.relpath(file_path, raw_scene_dir)
+                                    zipf.write(file_path, arcname)
+                        # Optionally remove the raw scene dir after archiving
+                        import shutil
+                        shutil.rmtree(raw_scene_dir)
+                        logger.info(f"Raw scenes archived to {zip_path}")
+                except Exception as e:
+                    logger.warning(f"Cold storage archiving failed: {e}")
 
-            return ExportResult(
-                success=True,
-                platform=platform,
-                video_path=final_video_path,
-                thumbnail_path=thumbnail_path,
-                caption_path=caption_path,
-                metadata_path=metadata_path,
-                duration_s=final_duration,
-                resolution=f"{preset['width']}x{preset['height']}",
-                compliance=compliance,
-            )
+                # Step 6: Generate captions (.srt)
+                caption_path = os.path.join(export_dir, f"{safe_title}.srt")
+                self._generate_srt(narration_texts, final_duration, caption_path)
+
+                # Step 7: Metadata with AI disclosure
+                metadata_path = os.path.join(export_dir, f"{safe_title}_metadata.json")
+                metadata = self._generate_metadata(
+                    title=title,
+                    platform=platform,
+                    duration_s=final_duration,
+                    resolution=f"{preset['width']}x{preset['height']}",
+                    hashtags=hashtags or self._default_hashtags(platform),
+                    narration_texts=narration_texts,
+                    compliance=compliance,
+                )
+                with open(metadata_path, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+                # Enforce strict, human-readable naming convention
+                project_name = safe_title
+                final_named_path = os.path.join(
+                    self.output_dir,
+                    f"{project_name}_{timestamp}_{preset['width']}x{preset['height']}.mp4"
+                )
+                try:
+                    if os.path.abspath(final_named_path) != os.path.abspath(final_video_path):
+                        shutil.copy2(final_video_path, final_named_path)
+                        logger.info(f"Final video renamed to {final_named_path}")
+                except Exception as e:
+                    logger.warning(f"Strict naming failed: {e}")
+
+                logger.info(
+                    "Export complete: %s [%s] %.1fs %dx%d",
+                    final_named_path, platform, final_duration,
+                    preset["width"], preset["height"],
+                )
+
+                # Content Marketer Agent: generate marketing_kit.json
+                try:
+                    from engine.marketing_agent import generate_marketing_kit
+                    manifest_path = metadata_path.replace("_metadata.json", ".json")
+                    if os.path.exists(manifest_path):
+                        generate_marketing_kit(manifest_path, output_dir=export_dir)
+                except Exception as e:
+                    logger.warning(f"Marketing Agent failed: {e}")
+
+                return ExportResult(
+                    success=True,
+                    platform=platform,
+                    video_path=final_named_path,
+                    thumbnail_path=thumbnail_path,
+                    caption_path=caption_path,
+                    metadata_path=metadata_path,
+                    duration_s=final_duration,
+                    resolution=f"{preset['width']}x{preset['height']}",
+                    compliance=compliance,
+                )
 
         except Exception as e:
             logger.exception("Export failed for %s: %s", platform, e)

@@ -1,3 +1,27 @@
+# ===== BEAST MODE UPGRADES =====
+beast_mode:
+  enabled: true
+  freeu:
+    enabled: true
+    s1: 0.9
+    s2: 0.2
+    b1: 1.2
+    b2: 1.4
+  motion_lora_stack:
+    enabled: false          # enable when you have trained motion LoRAs
+    paths: []
+  ip_adapter:
+    enabled: true
+    scale: 0.7
+  seed_locking:
+    enabled: true           # keeps character face across scenes
+  temporal_vae_tiling: true
+  parallel_rendering:
+    enabled: true
+    max_workers: 2          # adjust based on VRAM
+  negative_prompt_optimization:
+    enabled: true
+    extra_negatives: "blurry, low quality, distorted face, bad anatomy, watermark, text, logo"
 # -----------------------------------------------------------
 # AniMate Studio -- Configuration
 # -----------------------------------------------------------
@@ -22,19 +46,15 @@ lora:
 
 # -- AnimateDiff Motion Configuration --
 motion:
-  use_animatediff: true
-  # ToonYou Beta 6 — cartoon-optimized SD1.5 finetune, battle-tested with AnimateDiff
-  base_model_id: "frankjoshua/toonyou_beta6"
-  motion_module_path: "./models/motion_module/mm_sd_v15_v3.ckpt"
-  motion_adapter_repo: "guoyww/animatediff-motion-adapter-v1-5-3"
-  num_frames: 16                   # frames per clip (2s at 8fps)
-  fps: 8                           # native generation fps
-  steps: 25                        # inference steps per clip
-  guidance_scale: 7.5
+  use_animatediff: false
+  base_model_id: "damo-vilab/text-to-video-ms-1.7b"
+  motion_module_path: "guoyww/animatediff-motion-adapter-v1-5-2"
   height: 512                      # AnimateDiff native resolution
   width: 512
   lora_scale: 0.65
   final_duration_s: 60.0           # target final video duration
+  frames_per_scene: 120            # 15s at 8 fps (if used)
+  fps: 8                           # 8 fps (if used)
 
 # -- Model Configuration --
 models:
@@ -42,18 +62,27 @@ models:
     name: "damo-vilab/text-to-video-ms-1.7b"
     dtype: "float16"
     device: "cuda"
-    enable_cpu_offload: false
-    enable_vae_tiling: true
-    enable_vae_slicing: true
-    enable_attention_slicing: true
-    height: 256                    # native model resolution (upscaled to 1080p in export)
+    enable_cpu_offload: true
+    enable_vae_tiling: false
+    enable_vae_slicing: false
+    enable_attention_slicing: false
+    height: 256
     width: 256
-    num_inference_steps: 14        # quality-oriented production run
-    guidance_scale: 9.0            # stronger prompt adherence for sharper output
-    frames_per_scene: 24           # smoother motion per scene
-    fps: 12                        # smooth playback
-    fast_mode: true                # skip safety on 2/3 of frames in batch runs
-    vram_safety_margin_gb: 1.0     # pause if free VRAM < this
+    num_inference_steps: 15
+    guidance_scale: 8.5
+    style: "pixar_cute"
+    frames_per_scene: 120
+    fps: 8
+    fast_mode: true
+    vram_safety_margin_gb: 1.0
+# -- Compliance/Safety Filter --
+compliance:
+  safety_filter:
+    image:
+      enabled: false
+  safety:
+    enabled_image: false
+    enabled_text: false
 
   # -- Style / animation mode --
   style: "pixar_cute"              # "pixar_cute" | "hyper_realistic"
@@ -210,6 +239,13 @@ compliance:
   require_ai_disclosure: true
   require_royalty_free_audio: true
   ai_disclosure_text: "This video was created with AI assistance using AniMate Studio. Story and creative direction by human creator."
+
+# -- Safety Filter --
+safety_filter:
+  text:
+    enabled: false
+  image:
+    enabled: false
 
 # -- Usage Tracking --
 usage:

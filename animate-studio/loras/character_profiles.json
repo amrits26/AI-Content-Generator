@@ -46,5 +46,36 @@
     "lora_path": "C:\\Users\\amrit\\OneDrive\\Documents\\AI Content Generator\\animate-studio\\loras\\kids_style\\pytorch_lora_weights.safetensors",
     "lora_trigger_word": "kids_style",
     "lora_strength": 0.7
+  },
+  "cute_baby_beast": {
+    "name": "cute_baby_beast",
+    "animal_type": "bunny",
+    "color": "soft blue",
+    "accessory": "red bowtie",
+    "description": "",
+    "traits": [
+      "friendly",
+      "curious"
+    ],
+    "reference_image": null,
+    "lora_path": "C:\\Users\\amrit\\OneDrive\\Documents\\AI-Content-Generator\\animate-studio\\loras\\cute_baby_beast\\pytorch_lora_weights.safetensors",
+    "lora_trigger_word": "cute_baby_beast",
+    "lora_strength": 0.7
+  },
+  "Aura": {
+    "name": "Aura",
+    "animal_type": "bunny",
+    "color": "soft blue",
+    "accessory": "red bowtie",
+    "description": "",
+    "traits": [
+      "friendly",
+      "curious",
+      "kind"
+    ],
+    "reference_image": null,
+    "lora_path": null,
+    "lora_trigger_word": "",
+    "lora_strength": 0.8
   }
 }

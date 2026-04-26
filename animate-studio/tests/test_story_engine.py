@@ -116,10 +116,10 @@ def test_parse_json_with_extra_keys(engine):
 
 
 def test_generate_storyboard_surfaces_story_parse_error(engine):
-    engine._call_llm = lambda system_prompt, user_prompt: "not-json"
+    engine._call_llm = lambda *a, **kw: "not-json"
 
     with pytest.raises(StoryParseError):
-        engine.generate_storyboard(
+        engine.generate_manifest(
             theme="Billy Bunny learns to share",
             character_name="Billy",
             character_type="bunny",

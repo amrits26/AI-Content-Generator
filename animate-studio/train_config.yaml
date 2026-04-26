@@ -1,0 +1,24 @@
+# Training config for cute baby LoRA (AniMate Studio)
+pretrained_model_name_or_path: "emilianJR/epiCRealism"
+dataset_name: "./datasets/cute_combined"
+caption_column: "text"
+output_dir: "./loras/cute_baby_beast"
+rank: 128
+network_alpha: 128
+train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1e-5
+lr_scheduler: "cosine_with_restarts"
+lr_warmup_steps: 500
+max_train_steps: 6000
+checkpointing_steps: 1000
+validation_prompt: "A tiny baby bunny with big sparkly eyes and a pastel blue bow, sitting in a field of daisies, soft bokeh, storybook illustration, ultra cute"
+validation_epochs: 5
+seed: 42
+mixed_precision: "bf16"
+enable_xformers_memory_efficient_attention: true
+snr_gamma: 5.0
+noise_offset: 0.1
+
+# To launch training:
+# python train_lora.py --config train_config.yaml

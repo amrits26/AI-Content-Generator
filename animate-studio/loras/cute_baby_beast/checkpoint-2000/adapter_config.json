@@ -1,0 +1,14 @@
+{
+  "peft_type": "LORA",
+  "r": 128,
+  "lora_alpha": 128,
+  "target_modules": [
+    "to_out.0",
+    "to_v",
+    "to_k",
+    "to_q"
+  ],
+  "lora_dropout": 0.05,
+  "bias": "none",
+  "task_type": null
+}

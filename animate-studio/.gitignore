@@ -1,0 +1,25 @@
+# Secrets and Config
+.env
+config.yaml
+*.db
+usage.db
+
+# Environments
+.venv/
+__pycache__/
+*.pyc
+
+# Project Data (Large Files)
+output/
+cache/
+assets/
+*.mp4
+*.zip
+
+# OS Files
+.DS_Store
+Thumbs.db
+# Block large datasets and temp files
+animate-studio/datasets/
+*.tmp
+*.temp

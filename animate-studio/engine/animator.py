@@ -1,3 +1,10 @@
+import datetime
+from datetime import datetime, timedelta
+import json
+import time
+import os
+import re
+import math
 """
 ═══════════════════════════════════════════════════════════════
 AniMate Studio — Animation Pipeline (ModelScope / CogVideoX)
@@ -10,6 +17,7 @@ Optimized for HP Omen RTX 4060/4070 with VRAM-aware settings.
 ═══════════════════════════════════════════════════════════════
 """
 
+
 import gc
 import glob
 import hashlib
@@ -17,10 +25,21 @@ import logging
 import math
 import os
 import re
+import datetime
+from datetime import datetime
+import json
+import time
 import shutil
 import time
 from pathlib import Path
 from typing import Optional
+
+import threading
+import threading
+import time
+
+# Add tenacity for retry/circuit breaker
+from tenacity import retry, stop_after_attempt, wait_exponential, RetryError, before_sleep_log
 
 import numpy as np
 import torch
@@ -101,155 +120,220 @@ class Animator:
         self.config_path = config_path
         self.config = load_config(config_path=config_path, config=config)
 
+        # Motion Mastery: Advanced Motion Control
+        self.motion_smoothness = self.config.get("motion", {}).get("motion_smoothness", 0.85)
+
+        # Beast Mode config
+        self.beast_mode_cfg = self.config.get("beast_mode", {})
+        self.beast_mode_enabled = self.beast_mode_cfg.get("enabled", False)
+
         video_cfg = self.config["models"]["video"]
         perf_cfg = self.config["performance"]
+        # Inject Beast Mode upgrades if enabled
+        if self.beast_mode_enabled:
+            self._enable_beast_mode(self.beast_mode_cfg)
 
-        self.model_name = video_cfg["name"]
-        self.model_version = self._build_model_version()
-        self.dtype = getattr(torch, video_cfg["dtype"])
-        self.device = video_cfg["device"]
-        self.enable_cpu_offload = video_cfg["enable_cpu_offload"]
-        self.enable_vae_tiling = video_cfg["enable_vae_tiling"]
-        self.enable_vae_slicing = video_cfg.get("enable_vae_slicing", True)
-        self.enable_attn_slicing = video_cfg.get("enable_attention_slicing", True)
-        self.num_inference_steps = video_cfg["num_inference_steps"]
-        self.guidance_scale = video_cfg["guidance_scale"]
-        self.frames_per_scene = video_cfg["frames_per_scene"]
-        self.fps = video_cfg["fps"]
-        self.gen_height = video_cfg.get("height", 256)
-        self.gen_width = video_cfg.get("width", 256)
-        self.vram_safety_margin_gb = video_cfg.get("vram_safety_margin_gb", 1.0)
+    def _enable_beast_mode(self, beast_cfg):
+        video_cfg = self.config["models"]["video"]
+        perf_cfg = self.config.get("performance", {})
+        fast_mode = beast_cfg.get("fast_mode", False)
 
-        # Style / camera
-        self.style = self.config["models"].get("style", "pixar_cute")
-        self.camera_motion = self.config["models"].get("camera_motion", "auto")
-
-        # fast_mode: param overrides config; config overrides default (False)
-        if fast_mode is not None:
-            self.fast_mode = fast_mode
-        else:
-            self.fast_mode = video_cfg.get("fast_mode", False)
-
-        self.output_dir = self.config["app"]["output_dir"]
-        self.cache_dir = perf_cfg["cache_dir"]
-        self.enable_caching = perf_cfg["enable_scene_caching"]
-        self.vram_pause_threshold = perf_cfg.get("vram_pause_threshold", 0.90)
-        self.empty_cache_between_scenes = perf_cfg.get("torch_empty_cache_between_scenes", True)
-
-        os.makedirs(self.output_dir, exist_ok=True)
-        os.makedirs(self.cache_dir, exist_ok=True)
-
-        self.gpu_monitor = GPUMonitor(
-            temp_limit=perf_cfg["gpu_temp_limit_c"],
-            cooldown_s=perf_cfg["cooldown_seconds"],
-        )
-
-        self.character_manager = CharacterManager(config_path, config=self.config)
-        self.safety_filter = SafetyFilter(config_path, config=self.config)
-
-        # AnimateDiff real-motion engine
-        self._motion_cfg = self.config.get("motion", {})
-        self.use_animatediff = self._motion_cfg.get("use_animatediff", False)
-        self._animatediff = None
-        if self.use_animatediff:
-            shared_key = f"{self._motion_cfg.get('base_model_id', '')}|{self._motion_cfg.get('motion_module_path', '')}"
-            if self.__class__._shared_animatediff is None or self.__class__._shared_animatediff_key != shared_key:
-                self.__class__._shared_animatediff = AnimateDiffEngine(config_path, config=self.config)
-                self.__class__._shared_animatediff_key = shared_key
-            self._animatediff = self.__class__._shared_animatediff
-
-        self._pipeline = None
-
-    def _build_model_version(self) -> str:
-        motion_model = self.config.get("motion", {}).get("base_model_id", "")
-        pipeline_kind = "animatediff" if self.config.get("motion", {}).get("use_animatediff", False) else "legacy"
-        return f"{self.config['models']['video']['name']}|{motion_model}|{pipeline_kind}"
-
-    # ── Pipeline Management ──────────────────────────────
-    def load_pipeline(self):
-        """Load video generation pipeline with VRAM optimizations."""
-        if self._pipeline is not None:
-            return
-
-        if self.__class__._shared_pipeline is not None and self.__class__._shared_pipeline_key == self.model_version:
-            self._pipeline = self.__class__._shared_pipeline
-            return
-
-        # Auto-detect pipeline class based on model name
-        model_lower = self.model_name.lower()
-        if "cogvideo" in model_lower:
-            from diffusers import CogVideoXPipeline as PipelineClass
-        else:
-            from diffusers import DiffusionPipeline as PipelineClass
-
-        logger.info("Loading video pipeline: %s", self.model_name)
-
-        load_kwargs = dict(
-            torch_dtype=self.dtype,
-            low_cpu_mem_usage=True,
-        )
-        # Use fp16 variant if available (ModelScope provides fp16 safetensors)
-        if "cogvideo" not in model_lower:
-            load_kwargs["variant"] = "fp16"
-
-        self._pipeline = PipelineClass.from_pretrained(
-            self.model_name,
-            **load_kwargs,
-        )
-
-        # ── Upgrade scheduler for better quality ─────────
-        # DPMSolverMultistep produces significantly cleaner output
-        # than the default PNDM scheduler at the same step count
+        # FreeU
         try:
-            from diffusers import DPMSolverMultistepScheduler
-            self._pipeline.scheduler = DPMSolverMultistepScheduler.from_config(
-                self._pipeline.scheduler.config,
-                algorithm_type="dpmsolver++",
-                use_karras_sigmas=True,
-            )
-            logger.info("Scheduler upgraded to DPMSolver++ with Karras sigmas.")
+            if beast_cfg.get("freeu", {}).get("enabled", False):
+                if hasattr(self, "_pipeline") and self._pipeline is not None:
+                    self._pipeline.enable_freeu(
+                        s1=beast_cfg["freeu"].get("s1", 0.9),
+                        s2=beast_cfg["freeu"].get("s2", 0.2),
+                        b1=beast_cfg["freeu"].get("b1", 1.2),
+                        b2=beast_cfg["freeu"].get("b2", 1.4),
+                    )
         except Exception as e:
-            logger.info("Keeping default scheduler: %s", e)
+            logger.warning(f"FreeU not enabled: {e}")
 
-        if self.enable_cpu_offload:
-            if not _HAS_ACCELERATE:
-                logger.warning(
-                    "accelerate not installed -- CPU offload may be slow. "
-                    "Run: pip install accelerate"
+    def generate_episode(
+        self,
+        manifest: dict,
+        style_lock: Optional[dict] = None,
+        progress_callback=None,
+        style: Optional[str] = None,
+        camera_motion: Optional[str] = None,
+        num_inference_steps: Optional[int] = None,
+        gen_height: Optional[int] = None,
+        gen_width: Optional[int] = None,
+        fps: Optional[int] = None,
+        guidance_scale: Optional[float] = None,
+        lora_strength: Optional[float] = None,
+        motion_smoothness: Optional[float] = None,
+    ) -> dict:
+        """
+        Generate a complete episode from a manifest (agentic workflow).
+        Scene-by-scene with transitions, style lock, and safety checks.
+        """
+        # Add audio_sync flag to manifest for lip-sync readiness
+        manifest["audio_sync"] = True
+
+        # Use provided or default motion_smoothness
+        msmooth = motion_smoothness if motion_smoothness is not None else self.motion_smoothness
+        effective_style = style if style is not None else getattr(self, "style", None)
+        effective_camera = camera_motion if camera_motion is not None else getattr(self, "camera_motion", None)
+        effective_steps = num_inference_steps if num_inference_steps is not None else getattr(self, "num_inference_steps", None)
+        effective_height = gen_height if gen_height is not None else getattr(self, "gen_height", None)
+        effective_width = gen_width if gen_width is not None else getattr(self, "gen_width", None)
+        effective_fps = fps if fps is not None else getattr(self, "fps", None)
+        effective_guidance = guidance_scale if guidance_scale is not None else getattr(self, "guidance_scale", None)
+        effective_lora_strength = lora_strength
+        if not getattr(self, "use_animatediff", False):
+            self.load_pipeline()
+
+        # Style lock: inject color/texture/accessory into prompt
+        style_lock_str = ""
+        if style_lock:
+            style_lock_str = ", ".join(f"{k}: {v}" for k, v in style_lock.items())
+
+        character_name = manifest["character"]["name"]
+        character_type = manifest["character"]["type"]
+        character_prompt = f"{character_name} the {character_type}"
+        if style_lock_str:
+            character_prompt += f", {style_lock_str}"
+
+        scene_videos = []
+        scene_results = []
+        all_safety_results = []
+        prev_last_frame = None
+        prev_noise_seed = None  # For temporal consistency
+        scenes = manifest["scenes"]
+        total = len(scenes)
+
+        for i, scene in enumerate(scenes):
+            if progress_callback:
+                progress_callback(
+                    i, total,
+                    f"Generating scene {i+1}/{total}: {scene.get('action','')[:40]}...",
                 )
-                self._pipeline.enable_sequential_cpu_offload()
-                logger.info("Sequential CPU offload enabled (no accelerate).")
+
+            # Dynamic Pacing Agent: adjust smoothness/camera for long narration
+            narration_text = scene.get("narration") or scene.get("action", "")
+            narration_len = len(narration_text.split())
+            pacing_smoothness = msmooth
+            pacing_camera = scene.get("camera", effective_camera)
+            if narration_len > 30:
+                pacing_smoothness = min(1.0, msmooth + 0.1)
+                pacing_camera = "slow-zoom"
+
+            # Build masterpiece prompt
+            prompt_parts = [effective_style, character_prompt, scene.get("action", ""), pacing_camera]
+            masterpiece_prompt = ", ".join([p for p in prompt_parts if p])
+
+            # Sampler/CFG lock
+            sampler = "DPMSolver++"  # locked for cinematic
+            cfg_scale = effective_guidance
+
+            # LoRA injection (if available)
+            # (Assume character_manager handles LoRA by name)
+
+            # Generate scene using the masterpiece prompt
+            # (Reuse generate_scene_with_retry, but adapt for dict scene)
+            scene_obj = Scene(
+                scene_id=scene.get("scene_id", i+1),
+                narration=narration_text,
+                visual_description=masterpiece_prompt,
+                emotion_tone=scene.get("emotion_tone", ""),
+                setting=scene.get("setting", ""),
+                duration_s=scene.get("duration_s", 5.0),
+            )
+            # Temporal Consistency: lock noise seed for frame-to-frame stability
+            if prev_noise_seed is not None:
+                locked_seed = prev_noise_seed
             else:
-                try:
-                    self._pipeline.enable_model_cpu_offload()
-                    logger.info("CPU offload enabled.")
-                except (RuntimeError, AttributeError) as e:
-                    if "accelerate" in str(e).lower():
-                        logger.warning(
-                            "enable_model_cpu_offload requires accelerate -- "
-                            "falling back to sequential offloading. Error: %s", e
-                        )
-                        self._pipeline.enable_sequential_cpu_offload()
-                        logger.info("Sequential CPU offload enabled (fallback).")
-                    else:
-                        raise
+                locked_seed = None
+            result = self.generate_scene_with_retry(
+                scene=scene_obj,
+                character_name=character_name,
+                character_prompt=character_prompt,
+                prev_last_frame=prev_last_frame,
+                style=effective_style,
+                camera_motion=pacing_camera,
+                num_inference_steps=effective_steps,
+                gen_height=effective_height,
+                gen_width=effective_width,
+                guidance_scale=cfg_scale,
+                lora_strength=effective_lora_strength,
+                motion_smoothness=pacing_smoothness,
+                locked_seed=locked_seed,
+            )
+
+            # Color Grade Master: apply LUT based on mood
+            if result.get("video_path"):
+                # Determine LUT by mood
+                mood = scene.get("emotion_tone", "").lower()
+                lut = None
+                if "warm" in mood or "happy" in mood or "vintage" in mood:
+                    lut = "warm_gold.cube"
+                elif "mystery" in mood or "cool" in mood or "sad" in mood:
+                    lut = "cool_blue.cube"
+                # Only apply LUT if found
+                if lut:
+                    try:
+                        from utils.ffmpeg_utils import apply_lut
+                        apply_lut(result["video_path"], result["video_path"], lut)
+                        logger.info(f"Applied LUT {lut} to {result['video_path']}")
+                    except Exception as e:
+                        logger.warning(f"LUT application failed: {e}")
+                scene_videos.append(result["video_path"])
+                scene_results.append(result)
+                all_safety_results.append(result.get("safety_result"))
+                if result.get("frames"):
+                    prev_last_frame = result["frames"][-1]
+                # Asset Binder: lock noise seed for next scene
+                if result.get("seed") is not None:
+                    prev_noise_seed = result["seed"]
+            if getattr(self, "enable_caching", False):
+                self._cache_scene(f"scene_{scene_obj.scene_id}", result)
+            if progress_callback:
+                progress_callback(i + 1, total, f"Scene {i+1}/{total} complete.")
+
+        if not scene_videos:
+            return {"video_path": "", "error": "No scenes generated successfully."}
+
+        if progress_callback:
+            progress_callback(total, total, "Concatenating scenes...")
+
+        safe_title = re.sub(r'[<>:"/\\|?*]', '_', manifest["title"]).replace(' ', '_')[:80]
+        episode_path = os.path.join(
+            self.output_dir,
+            f"{safe_title}_episode.mp4",
+        )
+
+        if len(scene_videos) == 1:
+            shutil.copy2(scene_videos[0], episode_path)
         else:
-            self._pipeline = self._pipeline.to(self.device)
-
-        # ── VRAM optimizations for 8GB cards ─────────────
-        if self.enable_vae_tiling:
             try:
-                self._pipeline.vae.enable_tiling()
-                logger.info("VAE tiling enabled.")
-            except AttributeError:
-                logger.info("VAE tiling not supported by this pipeline.")
+                merged = scene_videos[0]
+                for j in range(1, len(scene_videos)):
+                    temp_out = os.path.join(self.output_dir, f"_merge_step_{j}.mp4")
+                    try:
+                        add_crossfade(merged, scene_videos[j], temp_out, fade_duration=0.3)
+                        merged = temp_out
+                    except Exception as e:
+                        logger.warning("Crossfade failed, using hard cut: %s", e)
+                        concat_videos([merged, scene_videos[j]], temp_out)
+                        merged = temp_out
+                shutil.move(merged, episode_path)
+            finally:
+                for tmp in glob.glob(os.path.join(self.output_dir, "_merge_step_*.mp4")):
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
 
-        if self.enable_vae_slicing:
-            try:
-                self._pipeline.vae.enable_slicing()
-                logger.info("VAE slicing enabled.")
-            except AttributeError:
-                logger.info("VAE slicing not supported by this pipeline.")
+        duration_s = sum(scene.get("duration_s", 0) for scene in scenes)
+        return {
+            "video_path": episode_path,
+            "scenes": scene_results,
+            "safety_results": all_safety_results,
+            "duration_s": duration_s,
+        }
 
         if self.enable_attn_slicing:
             try:
@@ -315,6 +399,9 @@ class Animator:
         gen_width: Optional[int] = None,
         guidance_scale: Optional[float] = None,
         lora_strength: Optional[float] = None,
+        locked_seed: Optional[int] = None,
+
+        character_ref_image: Optional[Image.Image] = None,
     ) -> dict:
         """
         Generate a single scene as a sequence of video frames.
@@ -340,9 +427,19 @@ class Animator:
         effective_steps = num_inference_steps if num_inference_steps is not None else self.num_inference_steps
         effective_height = gen_height if gen_height is not None else self.gen_height
         effective_width = gen_width if gen_width is not None else self.gen_width
-        effective_guidance = guidance_scale if guidance_scale is not None else self.guidance_scale
+        # Dynamic CFG rescaling (Beast Mode)
+        if self.beast_mode_enabled:
+            effective_guidance = 8.5
+            if scene and ("action" in scene.visual_description.lower() or "running" in scene.visual_description.lower()):
+                effective_guidance = 9.5
+        else:
+            effective_guidance = guidance_scale if guidance_scale is not None else self.guidance_scale
         # ── AnimateDiff path: real motion clips ──────────
         if self.use_animatediff and self._animatediff:
+            if getattr(self, "beast_mode_enabled", False):
+                effective_steps = self.beast_mode_steps
+            else:
+                effective_steps = num_inference_steps if num_inference_steps is not None else self.num_inference_steps
             result = self._generate_scene_animatediff(
                 scene, character_prompt, seed, style, camera_motion,
                 num_inference_steps=effective_steps,
@@ -395,12 +492,25 @@ class Animator:
                 strength_override=lora_strength,
             )
 
-        # Set seed for reproducibility
-        if seed is None:
-            seed = torch.randint(0, 2**32, (1,)).item()
-        generator = torch.Generator(device="cpu").manual_seed(seed)
+        # Seed locking (Beast Mode)
+        if self.beast_mode_enabled and locked_seed is not None:
+            generator = torch.Generator(device=self.device).manual_seed(locked_seed)
+        else:
+            if seed is None:
+                seed = torch.randint(0, 2**32, (1,)).item()
+            generator = torch.Generator(device="cpu").manual_seed(seed)
 
-        # Build generation kwargs — include height/width if pipeline supports it
+        if getattr(self, "beast_mode_enabled", False):
+            prompt = scene.visual_description  # Only the raw theme string
+        else:
+            prompt_parts = [style_prefix]
+            if cam_desc:
+                prompt_parts.append(cam_desc)
+            if character_prompt:
+                prompt_parts.append(character_prompt)
+            prompt_parts.append(scene.visual_description)
+            prompt = ", ".join(prompt_parts)
+        # Build generation kwargs
         gen_kwargs = dict(
             prompt=prompt,
             negative_prompt=negative,
@@ -409,6 +519,15 @@ class Animator:
             guidance_scale=effective_guidance,
             generator=generator,
         )
+        # Generate video frames
+        output = self._pipeline(**gen_kwargs)
+        # IP-Adapter logic (Beast Mode)
+        if self.beast_mode_enabled and hasattr(self, 'ip_adapter') and character_ref_image is not None:
+            try:
+                self._pipeline.set_ip_adapter_scale(self.beast_mode_cfg.get("ip_adapter", {}).get("scale", 0.7))
+                # Assume encode_reference_image exists or is handled elsewhere
+            except Exception as e:
+                logger.warning(f"IP-Adapter scale not set: {e}")
         # Add height/width for pipelines that support it
         try:
             import inspect
@@ -663,6 +782,42 @@ class Animator:
             "safety_result": safety_result,
         }
 
+    # Manual circuit breaker: open after 3 consecutive failures, reset after 60s
+    class ManualCircuitBreaker:
+        def __init__(self, fail_max=3, reset_timeout=60):
+            self.fail_max = fail_max
+            self.reset_timeout = reset_timeout
+            self.failure_count = 0
+            self.lock = threading.Lock()
+            self.opened_at = None
+        def __call__(self, func):
+            def wrapper(*args, **kwargs):
+                with self.lock:
+                    if self.opened_at and (time.time() - self.opened_at < self.reset_timeout):
+                        raise RuntimeError("Circuit breaker is open")
+                    if self.opened_at and (time.time() - self.opened_at >= self.reset_timeout):
+                        self.failure_count = 0
+                        self.opened_at = None
+                try:
+                    result = func(*args, **kwargs)
+                except Exception as e:
+                    with self.lock:
+                        self.failure_count += 1
+                        if self.failure_count >= self.fail_max:
+                            self.opened_at = time.time()
+                            logger.warning(f"Manual circuit breaker tripped for {func.__name__}")
+                    raise
+                return result
+            return wrapper
+    _scene_circuit_breaker = ManualCircuitBreaker(fail_max=3, reset_timeout=60)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    @_scene_circuit_breaker
     def generate_scene_with_retry(
         self,
         scene: Scene,
@@ -679,41 +834,43 @@ class Animator:
         lora_strength: Optional[float] = None,
     ) -> dict:
         """
-        Generate a scene with automatic retry on safety failure.
+        Generate a scene with automatic retry on safety failure, with retry/circuit breaker.
         Mutates seed on each retry.
         """
+        last_result = None
         for attempt in range(max_attempts):
             seed = torch.randint(0, 2**32, (1,)).item()
             logger.info(
                 "Scene %d — attempt %d/%d (seed=%d)",
                 scene.scene_id, attempt + 1, max_attempts, seed,
             )
-
-            result = self.generate_scene(
-                scene=scene,
-                character_name=character_name,
-                character_prompt=character_prompt,
-                prev_last_frame=prev_last_frame,
-                seed=seed,
-                style=style,
-                camera_motion=camera_motion,
-                num_inference_steps=num_inference_steps,
-                gen_height=gen_height,
-                gen_width=gen_width,
-                guidance_scale=guidance_scale,
-                lora_strength=lora_strength,
-            )
-
-            if result.get("safety_passed", False):
-                return result
-
-            logger.warning("Attempt %d failed safety — retrying with new seed...", attempt + 1)
-
+            try:
+                result = self.generate_scene(
+                    scene=scene,
+                    character_name=character_name,
+                    character_prompt=character_prompt,
+                    prev_last_frame=prev_last_frame,
+                    seed=seed,
+                    style=style,
+                    camera_motion=camera_motion,
+                    num_inference_steps=num_inference_steps,
+                    gen_height=gen_height,
+                    gen_width=gen_width,
+                    guidance_scale=guidance_scale,
+                    lora_strength=lora_strength,
+                )
+                last_result = result
+                if result.get("safety_passed", False):
+                    return result
+                logger.warning("Attempt %d failed safety — retrying with new seed...", attempt + 1)
+            except Exception as e:
+                logger.warning(f"Scene generation failed (attempt %d/%d): %s", attempt + 1, max_attempts, e)
+                last_result = {"error": str(e)}
         logger.error(
             "Scene %d failed all %d safety attempts.",
             scene.scene_id, max_attempts,
         )
-        return result  # Return last attempt even if failed
+        return last_result  # Return last attempt even if failed
 
     # ── Full Episode Generation ──────────────────────────
     def generate_episode(

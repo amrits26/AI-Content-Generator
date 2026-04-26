@@ -1,0 +1,63 @@
+<!--
+AniMate Studio Monetization Dashboard
+- Shows total videos, ClipStreams clips, revenue, and credit balances.
+- Uses Chart.js for charts.
+- Backend should serve /dashboard-data endpoint.
+
+Setup:
+1. Place in api/ folder.
+2. Backend: add /dashboard and /dashboard-data endpoints to FastAPI.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AniMate Monetization Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; }
+    .chart-container { width: 600px; margin-bottom: 40px; }
+  </style>
+</head>
+<body>
+  <h1>AniMate Monetization Dashboard</h1>
+  <div class="chart-container">
+    <canvas id="videosChart"></canvas>
+  </div>
+  <div class="chart-container">
+    <canvas id="revenueChart"></canvas>
+  </div>
+  <div>
+    <h2>API Credit Balances</h2>
+    <ul id="creditList"></ul>
+  </div>
+  <script>
+    async function fetchData() {
+      const res = await fetch('/dashboard-data');
+      return await res.json();
+    }
+    function renderCharts(data) {
+      new Chart(document.getElementById('videosChart'), {
+        type: 'bar',
+        data: {
+          labels: data.dates,
+          datasets: [{ label: 'Videos Generated', data: data.videos }]
+        }
+      });
+      new Chart(document.getElementById('revenueChart'), {
+        type: 'line',
+        data: {
+          labels: data.dates,
+          datasets: [{ label: 'Revenue ($)', data: data.revenue }]
+        }
+      });
+      const creditList = document.getElementById('creditList');
+      creditList.innerHTML = '';
+      for (const user of data.credits) {
+        creditList.innerHTML += `<li>${user.api_key}: ${user.credits} credits</li>`;
+      }
+    }
+    fetchData().then(renderCharts);
+  </script>
+</body>
+</html>

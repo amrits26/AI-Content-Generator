@@ -142,85 +142,86 @@ If you use OpenAI instead, set the provider and API settings in `config.yaml`, o
 Narration supports:
 
 - ElevenLabs when an API key is configured
-- Edge TTS as the fallback path
 
-Prefer environment variables for secrets:
+# AniMate Studio
 
-```powershell
-$env:OPENAI_API_KEY="your-key"
-$env:ELEVENLABS_API_KEY="your-key"
+## Cinematic, Agentic Animation Suite — Production-Grade
+
+---
+
+### 🚀 Overview
+AniMate Studio is a luxury-grade, agentic animation engine for kids' stories, built for cinematic quality, reliability, and creative control. It features a manifest-driven, multi-agent workflow, 4K upscaling, robust fallback logic, and a Cupertino-inspired UI.
+
+---
+
+## 🏗️ Architecture
+
+![Agentic Multi-Agent Flow](animate-studio/assets/references/architecture-diagram.png)
+
+- **Manifest-Driven Workflow**: LLM-powered storyboard → manifest → animation → audio → export.
+- **Multi-Agent Engine**: Modular agents for story, animation, audio, export, safety, and usage tracking.
+- **Robust Fallbacks**: All API calls use tenacity retry and circuit breaker logic.
+- **Luxury UI**: Gradio with Cupertino theme, glassmorphism, and micro-interactions.
+- **AIOps Monitoring**: Latency tracking, predictive logging, and cost estimation.
+- **Cold Storage**: Raw scene clips are archived after 4K export for a minimalist workspace.
+
+---
+
+## ⚡ Quickstart
+
+```sh
+# 1. Clone and enter the repo
+$ git clone <your-repo-url>
+$ cd AI-Content-Generator/animate-studio
+
+# 2. (Recommended) Set up Python 3.10+ venv
+$ python3 -m venv .venv
+$ source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+
+# 3. Install production dependencies
+$ pip install -r requirements-prod.txt
+
+# 4. Launch the app
+$ python main.py
 ```
 
-## How To Use The UI
+---
 
-### Quick Story
+## 🛠️ VS Code Setup & Env Vars
+- Recommended: VS Code + Python extension
+- Set environment variables in `.env` or via VS Code launch config:
+  - `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, etc.
+- GPU: NVIDIA CUDA 12+ required for 4K upscaling
 
-Use this tab to generate a short hook, typically 15 to 60 seconds.
+---
 
-Typical flow:
+## 💸 Cost Estimation
+- **LLM**: $0.02 per 1K tokens
+- **TTS**: $0.30 per 1K chars
+- **Video**: $0 (local GPU)
+- **Total**: See Usage & Costs tab in UI for live breakdown
 
-1. Enter a theme.
-2. Choose duration, character, style, and quality preset.
-3. Generate the video.
-4. Add narration and export the final result.
+---
 
-### Full Episode
+## 🧩 Key Modules
+- `engine/story_engine.py`: Manifest/LLM agent
+- `engine/animator.py`: Animation agent (motion mastery, LoRA, temporal consistency)
+- `engine/audio_engine.py`: TTS, BGM, robust fallback
+- `engine/exporter.py`: 4K upscaling, cold storage, strict naming
+- `engine/usage_tracker.py`: SQLite logging, latency, AIOps
+- `main.py`: Gradio UI, Cupertino theme, Review Station
 
-Use this tab for longer multi-scene videos with a stronger story arc and export-ready output.
+---
 
-### Character Lab
+## 📝 Documentation
+- See `setup_guide.md` for full setup and training LoRA/character adapters.
+- API docs: See `animate-studio/api_docs.json` (Swagger/OpenAPI for FastAPI backend).
 
-Use this tab to:
+---
 
-- Save named character profiles
-- Define animal type, color, accessory, and traits
-- Attach reference images
-- Associate matching LoRA assets
-
-Character profiles are stored in `loras/character_profiles.json`.
-
-## Batch Generation
-
-Use `batch_generate.py` to generate videos from `themes.csv` and resume after interruptions.
-
-Examples:
-
-```powershell
-.\.venv\Scripts\python.exe batch_generate.py
-.\.venv\Scripts\python.exe batch_generate.py --csv themes.csv --resume
-.\.venv\Scripts\python.exe batch_generate.py --cooldown 30
-```
-
-The batch flow:
-
-- loads themes from CSV
-- generates a storyboard
-- renders scenes
-- adds narration if available
-- exports a TikTok-formatted result
-- writes progress to `batch_state.json`
-
-## LoRA Training
-
-Use `train_lora.py` to train a style or character LoRA from images in a dataset directory.
-
-Example:
-
-```powershell
-.\.venv\Scripts\python.exe train_lora.py --name "kids_style" --images .\datasets\kids_style_v1 --steps 600 --rank 8
-```
-
-Expected output:
-
-- weights under `loras/<name>/`
-- checkpoints during training
-- adapters discoverable by the character manager
-
-The training dataset can include a `metadata.jsonl` file for captions.
-
-## Helper Scripts
-
-- `run_e2e_test.py`: full scripted path from story to narrated video
+## 🏆 Credits
+- Built by AniMate Studio contributors, 2026.
+- Powered by OpenAI, ElevenLabs, ModelScope, Real-ESRGAN, and more.
 - `test_pipeline.py`: integration-style checks for FFmpeg, story generation, audio, pipeline load, and one-scene generation
 - `download_model.py`: helper for downloading CogVideoX model assets
 - `generate_captions.py`: caption-related helper workflow

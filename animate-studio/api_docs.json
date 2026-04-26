@@ -1,0 +1,83 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "AniMate Studio API",
+    "version": "1.0.0",
+    "description": "FastAPI backend for AniMate Studio — agentic animation engine."
+  },
+  "paths": {
+    "/generate": {
+      "post": {
+        "summary": "Generate animation episode",
+        "description": "Generate a full animation episode from a manifest.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManifestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Generation result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/usage": {
+      "get": {
+        "summary": "Get usage and cost summary",
+        "responses": {
+          "200": {
+            "description": "Usage summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummary"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ManifestRequest": {
+        "type": "object",
+        "properties": {
+          "manifest": {"type": "object"},
+          "style_lock": {"type": "object"}
+        },
+        "required": ["manifest"]
+      },
+      "GenerationResult": {
+        "type": "object",
+        "properties": {
+          "video_path": {"type": "string"},
+          "scenes": {"type": "array", "items": {"type": "object"}},
+          "duration_s": {"type": "number"},
+          "error": {"type": "string"}
+        }
+      },
+      "UsageSummary": {
+        "type": "object",
+        "properties": {
+          "total_cost_cents": {"type": "number"},
+          "operations": {"type": "object"}
+        }
+      }
+    }
+  }
+}

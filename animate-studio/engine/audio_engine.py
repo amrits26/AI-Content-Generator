@@ -80,32 +80,54 @@ class AudioEngine:
         voice_id: Optional[str] = None,
     ) -> str:
         """
-        Generate narration audio from text.
-
-        Args:
-            text: Narration text to speak
-            output_path: Where to save the audio file
-            voice_id: ElevenLabs voice ID (uses default if None)
+        Generate narration audio from text, with robust fallback and structured logging.
+        Returns the file path regardless of provider.
         """
+        import time
+        from datetime import datetime
+        import traceback
         voice_id = voice_id or self.default_voice_id
-
         char_count = len(text)
-
+        provider_used = self.tts_provider
+        error_info = None
+        result = None
+        start_time = time.time()
         if self.tts_provider == "elevenlabs":
-            self.elevenlabs_key = require_env_secret(self.config, "ELEVENLABS_API_KEY", "ElevenLabs narration")
-            result = self._generate_elevenlabs(text, output_path, voice_id)
+            try:
+                self.elevenlabs_key = require_env_secret(self.config, "ELEVENLABS_API_KEY", "ElevenLabs narration")
+                result = self._generate_elevenlabs(text, output_path, voice_id)
+                logger.info(f"TTS provider: ElevenLabs | file: {output_path} | time: {datetime.now().isoformat()}")
+            except Exception as e:
+                error_info = f"{type(e).__name__}: {e}"
+                logger.error(f"ElevenLabs TTS failed at {datetime.now().isoformat()} | Error: {error_info}\n{traceback.format_exc()}")
+                logger.info("Falling back to Edge TTS for narration.")
+                provider_used = "edge_tts"
+                try:
+                    result = self._generate_edge_tts(text, output_path)
+                    logger.info(f"TTS provider: Edge TTS (fallback) | file: {output_path} | time: {datetime.now().isoformat()}")
+                except Exception as e2:
+                    error_info = f"EdgeTTS fallback failed: {type(e2).__name__}: {e2}"
+                    logger.error(f"Edge TTS fallback failed at {datetime.now().isoformat()} | Error: {error_info}\n{traceback.format_exc()}")
+                    raise RuntimeError(f"Both ElevenLabs and Edge TTS failed: {error_info}")
         else:
-            result = self._generate_edge_tts(text, output_path)
+            try:
+                result = self._generate_edge_tts(text, output_path)
+                logger.info(f"TTS provider: Edge TTS | file: {output_path} | time: {datetime.now().isoformat()}")
+            except Exception as e:
+                error_info = f"EdgeTTS failed: {type(e).__name__}: {e}"
+                logger.error(f"Edge TTS failed at {datetime.now().isoformat()} | Error: {error_info}\n{traceback.format_exc()}")
+                raise RuntimeError(f"Edge TTS failed: {error_info}")
 
         # Track usage (best-effort)
         try:
             from engine.usage_tracker import get_tracker
             get_tracker(self.config).log_tts_call(
-                provider=self.tts_provider, characters=char_count, voice_id=voice_id,
+                provider=provider_used, characters=char_count, voice_id=voice_id,
             )
         except Exception:
             logger.debug("Usage tracking failed for TTS call", exc_info=True)
 
+        logger.info(f"TTS generation complete | provider: {provider_used} | duration: {time.time()-start_time:.2f}s | file: {output_path}")
         return result
 
     def _generate_elevenlabs(
